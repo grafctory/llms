@@ -7,11 +7,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.4.0](https://github.com/metreeca/llms/compare/v0.3.1...HEAD)
 
+### Changed
+
+- **Breaking**: Upgrade `@metreeca/core` to `^0.14.0`, `@metreeca/http` to `^0.6.0` and `@metreeca/tape` to `^0.13.0`;
+  projects using them alongside these packages raise their own ranges as well, so that each is shared as a single copy
+
 ### Security
 
-- Upgrade `vite` to `8.3.5` (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw, GHSA-vfpm-58rq-9qcg, GHSA-rq7h-c2jc-7f22, GHSA-9jrq-w75r-8gcw): development dependency, no consumer impact
-- Upgrade `markdown-it` to `14.3.3` (GHSA-gfr2-rv44-r23c, GHSA-r7fv-28h4-cvq7, GHSA-vfgh-jcmw-g37q): development dependency, no consumer impact
-- Upgrade `vitest` to `4.1.12` (GHSA-qxg6-89mg-rqv8, GHSA-xp26-3454-mjgp): development dependency, no consumer impact
+- Upgrade the development dependencies `vite` to `8.3.5` (GHSA-587h-7wmj-h5pm, GHSA-698v-4r3x-3vcv,
+  GHSA-r825-w8mm-5pxw, GHSA-vfpm-58rq-9qcg, GHSA-rq7h-c2jc-7f22, GHSA-9jrq-w75r-8gcw), `markdown-it` to `14.3.3`
+  (GHSA-gfr2-rv44-r23c, GHSA-r7fv-28h4-cvq7, GHSA-vfgh-jcmw-g37q) and `vitest` to `4.1.12` (GHSA-qxg6-89mg-rqv8,
+  GHSA-xp26-3454-mjgp); none of them ships to consumers, so installed packages are unaffected
 
 ## [0.3.1](https://github.com/metreeca/llms/compare/v0.3.0...v0.3.1) - 2026-10-20
 
