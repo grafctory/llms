@@ -2,12 +2,6 @@
   "externalSymbolLinkMappings": {
     "@google/genai": {
       "GoogleGenAI": "https://googleapis.github.io/js-genai/release_docs/classes/client.GoogleGenAI.html"
-    },
-    "@metreeca/flow": {
-      "*": "https://metreeca.github.io/flow/"
-    },
-    "@metreeca/tape": {
-      "*": "https://metreeca.github.io/tape/"
     }
   }
 }
