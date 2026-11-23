@@ -59,8 +59,6 @@ vi.mock("@google/genai", async importOriginal => {
 
 describe("createGoogleAI", () => {
 
-	const converter = "gemini-2.5-flash-lite";
-
 	const prose: Part = { text: "prose" };
 	const call: Part = { functionCall: { name: "lookup", args: {} } };
 	const result: Part = { functionResponse: { name: "lookup", response: {} } };
@@ -71,38 +69,31 @@ describe("createGoogleAI", () => {
 	};
 
 	/**
-	 * Replaces the SDK request with a stub answering the converter with JSON and any other model with the given turns
-	 * in order, then with prose once they run out; a turn stated as an error rejects its request. Each response carries
-	 * the usage stated for it: per turn, or as `conversion`.
+	 * Replaces the SDK request with a stub answering the given turns in order, then prose once they run out; a turn
+	 * stated as an error rejects its request. Each response carries the usage stated for its turn.
 	 *
-	 * @returns A function listing the requests submitted to a model
+	 * @returns A function listing the requests submitted so far, whatever model they target
 	 */
-	function stub({ turns = [], conversion }: {
+	function stub({ turns = [] }: {
 
 		readonly turns?: readonly (Error | {
 			readonly parts?: readonly Part[]
 			readonly usage?: GenerateContentResponseUsageMetadata
 		})[]
 
-		readonly conversion?: GenerateContentResponseUsageMetadata
-
 	} = {}) {
 
 		const queue = turns.values();
 
-		generate.mockImplementation(async ({ model }) => {
+		generate.mockImplementation(async () => {
 
-			const turn = model === converter
-				? { parts: [{ text: `{ "label": "converted" }` }], usage: conversion }
-				: queue.next().value ?? { parts: [prose] };
+			const turn = queue.next().value ?? { parts: [prose] };
 
 			return turn instanceof Error ? Promise.reject(turn) : generated(turn);
 
 		});
 
-		return (model: string): readonly GenerateContentParameters[] => generate.mock.calls
-			.map(([params]) => params)
-			.filter(params => params.model === model);
+		return (): readonly GenerateContentParameters[] => generate.mock.calls.map(([params]) => params);
 
 	}
 
@@ -128,8 +119,7 @@ describe("createGoogleAI", () => {
 
 			const response = await submit({ model: "gemini-2.5-flash", contents: "query", config });
 
-			expect(requests("gemini-2.5-flash")).toEqual([expect.objectContaining({ contents: "query", config })]);
-			expect(requests(converter)).toEqual([]);
+			expect(requests()).toEqual([expect.objectContaining({ model: "gemini-2.5-flash", contents: "query", config })]);
 			expect(output(response)).toBe("prose");
 
 		});
@@ -151,7 +141,7 @@ describe("createGoogleAI", () => {
 
 			await submit({ model: "gemini-3-flash", contents, config: { tools: [tool] } });
 
-			expect(requests("gemini-3-flash")).toEqual([expect.objectContaining({ contents: [query] })]);
+			expect(requests()).toEqual([expect.objectContaining({ contents: [query] })]);
 
 		});
 
@@ -161,7 +151,7 @@ describe("createGoogleAI", () => {
 
 			const response = await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
 
-			expect(requests("gemini-3-flash")[1]?.contents).toEqual([
+			expect(requests()[1]?.contents).toEqual([
 				query,
 				{ role: "model", parts: [call] },
 				{ role: "user", parts: [result] }
@@ -171,13 +161,48 @@ describe("createGoogleAI", () => {
 
 		});
 
+		it("submits function calls to every callable tool, skipping bare declarations", async () => {
+
+			const other: Part = { functionResponse: { name: "lookup", response: { other: true } } };
+
+			const requests = stub({ turns: [{ parts: [call] }] });
+
+			await submit({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: {
+					tools: [tool, { functionDeclarations: [{ name: "lookup" }] }, { ...tool, callTool: async () => [other] }]
+				}
+			});
+
+			expect(requests()[1]?.contents).toEqual([
+				query,
+				{ role: "model", parts: [call] },
+				{ role: "user", parts: [result, other] }
+			]);
+
+		});
+
+		it("submits every turn with the SDK function calling loop disabled", async () => {
+
+			const requests = stub({ turns: [{ parts: [call] }] });
+
+			await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
+
+			expect(requests().map(({ config }) => config?.automaticFunctionCalling)).toEqual([
+				{ disable: true },
+				{ disable: true }
+			]);
+
+		});
+
 		it("attaches the conversation leading to the final response", async () => {
 
 			const requests = stub({ turns: [{ parts: [call] }] });
 
 			const response = await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
 
-			expect(response.automaticFunctionCallingHistory).toEqual(requests("gemini-3-flash")[1]?.contents);
+			expect(response.automaticFunctionCallingHistory).toEqual(requests()[1]?.contents);
 
 		});
 
@@ -191,7 +216,7 @@ describe("createGoogleAI", () => {
 				config: { tools: [tool], automaticFunctionCalling: { disable: true } }
 			});
 
-			expect(requests("gemini-3-flash")).toHaveLength(1);
+			expect(requests()).toHaveLength(1);
 			expect(response.functionCalls).toEqual([call.functionCall]);
 
 		});
@@ -206,7 +231,7 @@ describe("createGoogleAI", () => {
 				config: { tools: [tool], automaticFunctionCalling: { maximumRemoteCalls: 2 } }
 			})).rejects.toThrow(Error);
 
-			expect(requests("gemini-3-flash")).toHaveLength(2);
+			expect(requests()).toHaveLength(2);
 
 		});
 
@@ -240,124 +265,61 @@ describe("createGoogleAI", () => {
 
 		const config = { tools, responseMimeType: "application/json", responseJsonSchema };
 
-		it("submits a JSON Schema to models accepting it alongside tools", async () => {
+		it.each([
+			"gemini-3-flash",
+			"gemini-2.5-flash",
+			"models/gemini-2.5-flash",
+			"gemini-flash-latest",
+			"tunedModels/sentiment-tuned"
+		])("submits a JSON Schema to %s alone", async model => {
 
-			const requests = stub();
+			const requests = stub({ turns: [{ parts: [call] }, { parts: [{ text: `{ "label": "structured" }` }] }] });
 
-			const response = await submit({ model: "gemini-3-flash", contents: "query", config });
+			const response = await submit({ model, contents: "query", config: { ...config, tools: [tool] } });
 
-			expect(requests("gemini-3-flash").map(({ config }) => config)).toEqual([expect.objectContaining({
-				responseMimeType: "application/json",
-				responseJsonSchema
-			})]);
+			expect(requests()).toEqual([
+				expect.objectContaining({ model, config: expect.objectContaining({ responseJsonSchema }) }),
+				expect.objectContaining({ model, config: expect.objectContaining({ responseJsonSchema }) })
+			]);
 
-			expect(requests(converter)).toEqual([]);
-			expect(output(response)).toBe("prose");
-
-		});
-
-		it("converts the prose of models rejecting a JSON Schema alongside tools", async () => {
-
-			const requests = stub();
-
-			const response = await submit({ model: "gemini-2.5-flash", contents: "query", config });
-
-			expect(requests("gemini-2.5-flash").map(({ config }) => config)).toEqual([expect.not.objectContaining({
-				responseJsonSchema: expect.anything()
-			})]);
-
-			expect(requests(converter).map(({ config }) => config)).toEqual([expect.objectContaining({
-				responseMimeType: "application/json",
-				responseJsonSchema
-			})]);
-
-			expect(json(response)).toEqual({ label: "converted" });
+			expect(json(response)).toEqual({ label: "structured" });
 
 		});
 
-		it("converts the prose of models rejecting a legacy schema alongside tools", async () => {
+		it("submits a legacy schema alongside tools", async () => {
 
 			const requests = stub();
 
 			const responseSchema = { type: Type.OBJECT, properties: { label: { type: Type.STRING } } };
 
-			const response = await submit({
+			await submit({
 				model: "gemini-2.5-flash",
 				contents: "query",
 				config: { tools, responseMimeType: "application/json", responseSchema }
 			});
 
-			expect(requests(converter).map(({ config }) => config)).toEqual([expect.objectContaining({
+			expect(requests().map(({ config }) => config)).toEqual([expect.objectContaining({
+				responseMimeType: "application/json",
 				responseSchema
 			})]);
 
-			expect(json(response)).toEqual({ label: "converted" });
-
 		});
 
-		it("switches a model rejecting the schema to conversion for the lifetime of the client", async () => {
+		it("fails on a rejected schema, leaving later requests to the same model unaffected", async () => {
 
 			const requests = stub({ turns: [new ApiError({ message: "schema rejected", status: 400 })] });
 
 			const client = createGoogleAI({ apiKey: "test" });
 
-			const rejected = await client.models.generateContent({ model: "gemini-3-flash", contents: "query", config });
-			const following = await client.models.generateContent({ model: "gemini-3-flash", contents: "query", config });
-
-			expect(requests("gemini-3-flash").map(({ config }) => config)).toEqual([
-				expect.objectContaining({ responseJsonSchema }),
-				expect.not.objectContaining({ responseJsonSchema: expect.anything() }),
-				expect.not.objectContaining({ responseJsonSchema: expect.anything() })
-			]);
-
-			expect(json(rejected)).toEqual({ label: "converted" });
-			expect(json(following)).toEqual({ label: "converted" });
-
-		});
-
-		it("fails on a bad request to a model already served without the schema", async () => {
-
-			stub({ turns: [new ApiError({ message: "bad request", status: 400 })] });
-
-			await expect(submit({ model: "gemini-2.5-flash", contents: "query", config }))
+			await expect(client.models.generateContent({ model: "gemini-3-flash", contents: "query", config }))
 				.rejects.toThrow(ApiError);
 
-		});
+			await client.models.generateContent({ model: "gemini-3-flash", contents: "query", config });
 
-		it("fails converting a reply carrying no text", async () => {
-
-			const requests = stub({ turns: [{ parts: [{ text: " " }] }] });
-
-			await expect(submit({ model: "gemini-2.5-flash", contents: "query", config }))
-				.rejects.toThrow(Error);
-
-			expect(requests(converter)).toEqual([]);
-
-		});
-
-		it("hands over function calls unconverted", async () => {
-
-			const requests = stub({ turns: [{ parts: [call] }] });
-
-			const response = await submit({
-				model: "gemini-2.5-flash",
-				contents: "query",
-				config: { ...config, automaticFunctionCalling: { disable: true } }
-			});
-
-			expect(requests(converter)).toEqual([]);
-			expect(response.functionCalls).toEqual([call.functionCall]);
-
-		});
-
-		it("hands over the response as it stands if no schema is requested", async () => {
-
-			const requests = stub();
-
-			const response = await submit({ model: "gemini-2.5-flash", contents: "query", config: { tools } });
-
-			expect(requests(converter)).toEqual([]);
-			expect(output(response)).toBe("prose");
+			expect(requests().map(({ config }) => config)).toEqual([
+				expect.objectContaining({ responseJsonSchema }),
+				expect.objectContaining({ responseJsonSchema })
+			]);
 
 		});
 
@@ -380,7 +342,18 @@ describe("createGoogleAI", () => {
 
 			const response = await submit({ model: "gemini-3-flash", contents: "query" });
 
-			expect(requests("gemini-3-flash")).toHaveLength(2);
+			expect(requests()).toHaveLength(2);
+			expect(output(response)).toBe("prose");
+
+		});
+
+		it("resumes a function calling turn rejected over the quota after the advertised delay", async () => {
+
+			const requests = stub({ turns: [{ parts: [call] }, exhausted("0s")] });
+
+			const response = await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
+
+			expect(requests()).toHaveLength(3);
 			expect(output(response)).toBe("prose");
 
 		});
@@ -391,7 +364,7 @@ describe("createGoogleAI", () => {
 
 			await expect(submit({ model: "gemini-3-flash", contents: "query" })).rejects.toThrow(ApiError);
 
-			expect(requests("gemini-3-flash")).toHaveLength(1);
+			expect(requests()).toHaveLength(1);
 
 		});
 
@@ -474,30 +447,6 @@ describe("createGoogleAI", () => {
 			const response = await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
 
 			expect(response.usageMetadata).toEqual(usage);
-
-		});
-
-		it("adds the usage of the conversion request", async () => {
-
-			stub({
-				turns: [
-					{ parts: [call], usage: { promptTokenCount: 10, candidatesTokenCount: 1, totalTokenCount: 11 } },
-					{ parts: [prose], usage: { promptTokenCount: 20, candidatesTokenCount: 2, totalTokenCount: 22 } }
-				],
-				conversion: { promptTokenCount: 30, candidatesTokenCount: 3, totalTokenCount: 33 }
-			});
-
-			const response = await submit({
-				model: "gemini-2.5-flash",
-				contents: "query",
-				config: { tools: [tool], responseMimeType: "application/json", responseJsonSchema: {} }
-			});
-
-			expect(response.usageMetadata).toEqual({
-				promptTokenCount: 60,
-				candidatesTokenCount: 6,
-				totalTokenCount: 66
-			});
 
 		});
 

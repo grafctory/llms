@@ -7,11 +7,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.0](https://github.com/metreeca/llms/compare/v0.4.0...HEAD)
 
+### Changed
+
+- **Breaking**: `@metreeca/llms-google` — a requested response schema is submitted with every request carrying tools,
+  and a model rejecting it fails with the API error rather than replying through a hidden `gemini-2.5-flash-lite`
+  conversion ([#6](https://github.com/metreeca/llms/issues/6)), so generations reach only the model the caller named
+
 ### Fixed
 
-- `@metreeca/llms-google` — the `usageMetadata` of a generation resolving function calls or converting its reply into
-  JSON accounts for every request issued ([#5](https://github.com/metreeca/llms/issues/5)), so token budgets and
-  accounting no longer undercount tool-using runs, which used to see only the last turn of each generation
+- `@metreeca/llms-google` — the `usageMetadata` of a generation resolving function calls accounts for every turn
+  ([#5](https://github.com/metreeca/llms/issues/5)), so token budgets and accounting no longer undercount tool-using
+  runs, which used to see only the last turn of each generation and missed the tokens spent on the earlier ones
 
 ## [0.4.0](https://github.com/metreeca/llms/compare/v0.3.1...v0.4.0) - 2026-11-17
 
