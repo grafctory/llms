@@ -7,6 +7,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased](https://github.com/metreeca/llms/compare/v0.4.0...HEAD)
 
+### Fixed
+
+- `@metreeca/llms-google` — the `usageMetadata` of a generation resolving function calls or converting its reply into
+  JSON accounts for every request issued ([#5](https://github.com/metreeca/llms/issues/5)), so token budgets and
+  accounting no longer undercount tool-using runs, which used to see only the last turn of each generation
+
 ## [0.4.0](https://github.com/metreeca/llms/compare/v0.3.1...v0.4.0) - 2026-11-17
 
 ### Changed

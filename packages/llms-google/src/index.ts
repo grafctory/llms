@@ -34,8 +34,10 @@ import {
 	ContentListUnion,
 	EmbedContentResponse,
 	GenerateContentResponse,
+	GenerateContentResponseUsageMetadata,
 	GoogleGenAI,
 	GoogleGenAIOptions,
+	ModalityTokenCount,
 	Part
 } from "@google/genai";
 import { error, isString, memo, type Value } from "@metreeca/core";
@@ -93,6 +95,11 @@ const attempts = 5;
  *   alongside `tools` only from the Gemini 3 generation onwards. Earlier models reply in prose, and an extra request
  *   to `gemini-2.5-flash-lite` converts the reply into JSON conforming to the schema, at the cost of one additional
  *   generation. A model rejecting the schema is switched to the conversion route for the lifetime of the client.
+ *
+ * The `usageMetadata` of a returned response accounts for every request issued to produce it, function calling turns
+ * and conversion request included, so token budgets and accounting see what the generation actually cost. Token
+ * counts are summed across requests; `initialPromptTokenCount` is stated by the first request and `trafficType` by
+ * the last, since a prompt size and a billing tier describe a single request and do not add up across several.
  *
  * @see {@link https://ai.google.dev/gemini-api/docs/function-calling Function calling}
  * @see {@link https://ai.google.dev/gemini-api/docs/structured-output Structured output}
@@ -250,7 +257,7 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 						 * parts are appended to the history for the next turn, until a response reports no call.
 						 *
 						 * @returns The final model response, with the conversation history attached as
-						 *          `automaticFunctionCallingHistory`
+						 *          `automaticFunctionCallingHistory` and the usage of every turn as `usageMetadata`
 						 *
 						 * @throws {@link !Error Error} If a response carries no model content, if a function is
 						 *         requested while no callable tool is declared, or if `maximumRemoteCalls` turns
@@ -263,51 +270,67 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 								&& typeof tool.callTool === "function"
 							) ?? [];
 
-							const history: Content[] = (Array.isArray(params.contents)
+							return await converse((Array.isArray(params.contents)
 									? params.contents
 									: [params.contents]
 							).map(content =>
 								isString(content) ? { role: "user", parts: [{ text: content }] }
 									: "role" in content && "parts" in content ? content
 										: { role: "user", parts: [content as Part] }
-							);
+							), undefined, 0);
 
-							for (let turn = 0; maximumRemoteCalls === 0 || turn < maximumRemoteCalls; turn++) {
 
-								const response = await retry(history);
+							async function converse(
+								history: Content[],
+								usage: undefined | GenerateContentResponseUsageMetadata,
+								turn: number
+							): Promise<GenerateContentResponse> {
 
-								if ( !response.candidates?.[0]?.content ) {
-									throw new Error("no model content in response");
-								}
+								if ( maximumRemoteCalls !== 0 && turn >= maximumRemoteCalls ) {
 
-								const calls = (response.candidates[0]?.content?.parts ?? [])
-									.map(part => part.functionCall)
-									.filter((call) => call !== undefined);
-
-								if ( calls.length === 0 ) {
-
-									return Object.assign(response, {
-										automaticFunctionCallingHistory: history
-									});
+									throw new Error(`maximum turns (${maximumRemoteCalls}) reached without completion`);
 
 								} else {
 
-									if ( callables.length === 0 ) {
+									const response = await retry(history);
+
+									const content = response.candidates?.[0]?.content;
+									const calls = (content?.parts ?? [])
+										.map(part => part.functionCall)
+										.filter(call => call !== undefined);
+
+									const $usage = combine(usage, response.usageMetadata);
+
+									if ( !content ) {
+
+										throw new Error("no model content in response");
+
+									} else if ( calls.length === 0 ) {
+
+										return Object.assign(response, {
+											automaticFunctionCallingHistory: history,
+											usageMetadata: $usage
+										});
+
+									} else if ( callables.length === 0 ) {
+
 										throw new Error(`no callable tools available to fulfill model requests <${
 											calls.map(call => call.name).join(", ")
 										}>`);
-									}
 
-									history.push(response.candidates[0].content, {
-										role: "user",
-										parts: (await Promise.all(callables.map(tool => tool.callTool(calls)))).flat()
-									});
+									} else {
+
+										return await converse([...history, content, {
+											role: "user",
+											parts: (await Promise.all(callables.map(tool => tool.callTool(calls)))).flat()
+										}], $usage, turn+1);
+
+									}
 
 								}
 
 							}
 
-							throw new Error(`maximum turns (${maximumRemoteCalls}) reached without completion`);
 						}
 
 						/**
@@ -399,9 +422,9 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 					 *
 					 * @param response The model response to post-process
 					 *
-					 * @returns `response` with its candidates replaced by the converted JSON, or `response` as it
-					 *          stands if the model applied the schema itself, if no schema was requested, or if the
-					 *          response is still awaiting tool execution
+					 * @returns `response` with its candidates replaced by the converted JSON and its `usageMetadata`
+					 *          extended to the conversion request; `response` unchanged if the model applied the
+					 *          schema itself, if no schema was requested, or if the response awaits tool execution
 					 *
 					 * @throws {@link !Error Error} If the response to convert carries no text
 					 *
@@ -485,7 +508,8 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 							return {
 								...response,
-								candidates: data.candidates
+								candidates: data.candidates,
+								usageMetadata: combine(response.usageMetadata, data.usageMetadata)
 							};
 
 						}
@@ -670,5 +694,61 @@ export function json<T extends Value = Value>(response: GenerateContentResponse)
 export function embedding(response: EmbedContentResponse): Vector {
 
 	return response.embeddings?.[0]?.values ?? [];
+
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Combines the usage of two consecutive requests into the usage of the generation issuing both.
+ *
+ * @param earlier The usage of the earlier request, if stated
+ * @param later The usage of the later request, if stated
+ *
+ * @returns The token counts of `earlier` and `later` summed, by modality where detailed, with the initial prompt size
+ *          of `earlier` and the traffic type of `later`; the other usage if only one is stated, undefined if neither
+ */
+function combine(
+	earlier: undefined | GenerateContentResponseUsageMetadata,
+	later: undefined | GenerateContentResponseUsageMetadata
+): undefined | GenerateContentResponseUsageMetadata {
+
+	return earlier === undefined ? later : later === undefined ? earlier : {
+
+		promptTokenCount: sum(earlier.promptTokenCount, later.promptTokenCount),
+		candidatesTokenCount: sum(earlier.candidatesTokenCount, later.candidatesTokenCount),
+		cachedContentTokenCount: sum(earlier.cachedContentTokenCount, later.cachedContentTokenCount),
+		thoughtsTokenCount: sum(earlier.thoughtsTokenCount, later.thoughtsTokenCount),
+		toolUsePromptTokenCount: sum(earlier.toolUsePromptTokenCount, later.toolUsePromptTokenCount),
+		totalTokenCount: sum(earlier.totalTokenCount, later.totalTokenCount),
+
+		promptTokensDetails: tally(earlier.promptTokensDetails, later.promptTokensDetails),
+		candidatesTokensDetails: tally(earlier.candidatesTokensDetails, later.candidatesTokensDetails),
+		cacheTokensDetails: tally(earlier.cacheTokensDetails, later.cacheTokensDetails),
+		toolUsePromptTokensDetails: tally(earlier.toolUsePromptTokensDetails, later.toolUsePromptTokensDetails),
+
+		initialPromptTokenCount: earlier.initialPromptTokenCount ?? later.initialPromptTokenCount,
+		trafficType: later.trafficType ?? earlier.trafficType
+
+	};
+
+
+	function sum(x: undefined | number, y: undefined | number) {
+		return x === undefined && y === undefined ? undefined : (x ?? 0)+(y ?? 0);
+	}
+
+	function tally(x: undefined | ModalityTokenCount[], y: undefined | ModalityTokenCount[]) {
+
+		const counts = [...x ?? [], ...y ?? []];
+
+		return x === undefined && y === undefined ? undefined : [...new Set(counts.map(({ modality }) => modality))]
+			.map(modality => ({
+				modality, tokenCount: counts
+					.filter(count => count.modality === modality)
+					.reduce((total, { tokenCount }) => total+(tokenCount ?? 0), 0)
+			}));
+
+	}
 
 }
