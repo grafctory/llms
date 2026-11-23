@@ -20,6 +20,9 @@
  * Connects AI jobs to Google models, ready to work alongside any other task in a pipeline. Long runs proceed reliably
  * to completion, and every result a job receives from a model can be trusted as complete.
  *
+ * Stands in for the Google GenAI SDK, whose whole surface it re-exports: import SDK values and types from here rather
+ * than from `@google/genai`, so they always match the client and no direct dependency on the SDK is needed.
+ *
  * @module index
  *
  * @see {@link https://ai.google.dev/gemini-api/docs Gemini API documentation}
@@ -44,6 +47,8 @@ import { error, isString, memo, type Value } from "@metreeca/core";
 import { createThrottle, type Throttle } from "@metreeca/core/async";
 import { TooManyRequests } from "@metreeca/http";
 import { log, Logger, report } from "@metreeca/tape";
+
+export * from "@google/genai";
 
 
 /**
@@ -169,9 +174,9 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 		models: Object.assign(ai.models, {
 
-			generateContent: (generateContent => {
+			generateContent: (generateContent =>
 
-				return async (...[{ config, ...params }, ...rest]: Parameters<typeof generateContent>) => {
+				async (...[{ config, ...params }, ...rest]: Parameters<typeof generateContent>) => {
 
 					return config?.tools
 						? await execute()
@@ -335,9 +340,9 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 					}
 
-				};
+				}
 
-			})(ai.models.generateContent.bind(ai.models)),
+			)(ai.models.generateContent.bind(ai.models)),
 
 			generateContentStream: throttled(ai.models.generateContentStream.bind(ai.models)),
 			embedContent: throttled(ai.models.embedContent.bind(ai.models)),

@@ -47,7 +47,7 @@
     "check": "npx vitest --typecheck run"
   },
   "dependencies": {
-    "@google/genai": "^2.28.0",
+    "@google/genai": "~2.30.0",
     "@metreeca/core": "^0.14.0",
     "@metreeca/http": "^0.6.0",
     "@metreeca/llms": "^0.5.0",

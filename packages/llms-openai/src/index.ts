@@ -20,6 +20,9 @@
  * Connects AI jobs to OpenAI models, ready to work alongside any other task in a pipeline. Long runs proceed reliably
  * to completion, and every result a job receives from a model can be trusted as complete.
  *
+ * Stands in for the OpenAI Node API Library, re-exporting its whole surface, default export included: import SDK values
+ * and types from here rather than from `openai`, so they always match the client without a direct SDK dependency.
+ *
  * @module index
  *
  * @see {@link https://platform.openai.com/docs OpenAI API documentation}
@@ -28,11 +31,14 @@
  */
 
 import type { Vector } from "@metreeca/llms";
-import { isObject, isString, memo, type Value } from "@metreeca/core";
+import { error, isObject, isString, memo, type Value } from "@metreeca/core";
 import { createThrottle, type Throttle } from "@metreeca/core/async";
 import { TooManyRequests } from "@metreeca/http";
 import { log, type Logger, report } from "@metreeca/tape";
 import { type ClientOptions, OpenAI } from "openai";
+
+export * from "openai";
+export { default } from "openai";
 
 
 /**
@@ -184,11 +190,7 @@ export function createOpenAI(options: ClientOptions = {}) {
 				const response = await dispatch(input, init);
 				const delay = await limited(response);
 
-				if ( delay !== undefined ) {
-					throw new Limited(delay);
-				}
-
-				return response;
+				return delay === undefined ? response : error(new Limited(delay));
 
 			}, {
 
@@ -254,13 +256,7 @@ export function createOpenAI(options: ClientOptions = {}) {
  */
 export function text(completion: OpenAI.ChatCompletion): string {
 
-	const choice = completion.choices[0];
-
-	if ( choice === undefined ) {
-		throw new Error("missing completion choice");
-	}
-
-	const { finish_reason, message: { content, refusal } } = choice;
+	const { finish_reason, message: { content, refusal } } = completion.choices[0] ?? error("missing completion choice");
 
 	if ( refusal ) {
 

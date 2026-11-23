@@ -49,6 +49,23 @@ Provider packages are self-contained leaves named after the vendor, not the clou
 `llms-google`, not `llms-gcp` or `llms-gemini`. Each pulls in the core package transitively and only the SDK its own
 provider needs.
 
+# Provider SDKs
+
+A provider package is a drop-in replacement for its vendor SDK: its value is a patched client working around API and
+SDK quirks without the consumer knowing about them. Every provider package therefore holds to the same contract:
+
+- **Re-export the whole SDK**: `export * from "<sdk>"` in `src/index.ts`, plus `export { default } from "<sdk>"`
+  where the SDK has a default export, so consumers import SDK values and types from the provider package alone and
+  they always match the client; a test asserts that every SDK export comes through unchanged
+- **Regular dependency, never a peer**: a peer would let the consumer pick an SDK release the workarounds were never
+  tested against, and would force them to declare the SDK themselves, defeating the drop-in
+- **Tilde range at the tested release** (`~2.30.0`): the workarounds reach into SDK internals that a minor release
+  may change silently; widen or move the range only after re-running the provider tests against the new release
+- **SDK surface is public API**: a range move that breaks the re-exported surface is a breaking change of the provider
+  package (`version-manager:semver`)
+- **Docs stay ours**: the shared TypeDoc `excludeExternals` keeps the re-exported SDK out of the generated site, which
+  links SDK symbols to the vendor reference through `externalSymbolLinkMappings`
+
 # Shared Utilities
 
 Reach for `@metreeca/core` before writing a helper: its `strings`, `numbers`, `arrays` and `values` entry points

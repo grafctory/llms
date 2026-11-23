@@ -14,16 +14,20 @@
  * limitations under the License.
  */
 
+import * as connectors from "./index.js";
 import { createGoogleAI, embedding, json, text as output } from "./index.js";
+import * as sdk from "@google/genai";
 import {
 	ApiError,
 	type CallableTool,
 	type ContentListUnion,
+	type EmbedContentParameters,
 	EmbedContentResponse,
 	FinishReason,
 	type GenerateContentParameters,
 	GenerateContentResponse,
 	type GenerateContentResponseUsageMetadata,
+	type GoogleGenAIOptions,
 	MediaModality,
 	type Part,
 	TrafficType,
@@ -33,9 +37,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 
 /**
- * Stands in for the request the SDK would submit to the Gemini API.
+ * Stand in for the options the SDK client is created with and for the requests it would submit to the Gemini API.
  */
-const generate = vi.hoisted(() => vi.fn<(params: GenerateContentParameters) => Promise<GenerateContentResponse>>());
+const { construct, generate, embed } = vi.hoisted(() => ({
+	construct: vi.fn<(options: GoogleGenAIOptions) => void>(),
+	generate: vi.fn<(params: GenerateContentParameters) => Promise<GenerateContentResponse>>(),
+	embed: vi.fn<(params: EmbedContentParameters) => Promise<EmbedContentResponse>>()
+}));
 
 vi.mock("@google/genai", async importOriginal => {
 
@@ -44,15 +52,35 @@ vi.mock("@google/genai", async importOriginal => {
 	return {
 		...actual, GoogleGenAI: class extends actual.GoogleGenAI {
 
-			constructor(options: ConstructorParameters<typeof actual.GoogleGenAI>[0]) {
+			constructor(options: GoogleGenAIOptions) {
 				super(options);
-				Object.assign(this.models, { generateContent: generate });
+				construct(options);
+				Object.assign(this.models, { generateContent: generate, embedContent: embed });
 			}
 
 		}
 	};
 
 });
+
+
+/**
+ * Creates a response carrying a single candidate, with model content only if parts are given.
+ */
+function generated({ parts, finishReason = FinishReason.STOP, usage }: {
+
+	readonly parts?: readonly Part[]
+	readonly finishReason?: FinishReason
+	readonly usage?: GenerateContentResponseUsageMetadata
+
+}): GenerateContentResponse {
+
+	return Object.assign(new GenerateContentResponse(), {
+		candidates: [{ finishReason, ...(parts ? { content: { role: "model", parts: [...parts] } } : {}) }],
+		usageMetadata: usage
+	});
+
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -105,9 +133,35 @@ describe("createGoogleAI", () => {
 	}
 
 	afterEach(() => {
+		construct.mockReset();
 		generate.mockReset();
+		embed.mockReset();
 	});
 
+
+	describe("retry options", () => {
+
+		it("attempts a transiently failing request up to 5 times by default", async () => {
+
+			createGoogleAI({ apiKey: "test", httpOptions: { timeout: 1000 } });
+
+			expect(construct).toHaveBeenCalledWith(expect.objectContaining({
+				httpOptions: { timeout: 1000, retryOptions: { attempts: 5 } }
+			}));
+
+		});
+
+		it("keeps the retry options stated by the caller", async () => {
+
+			createGoogleAI({ apiKey: "test", httpOptions: { retryOptions: { attempts: 1 } } });
+
+			expect(construct).toHaveBeenCalledWith(expect.objectContaining({
+				httpOptions: { retryOptions: { attempts: 1 } }
+			}));
+
+		});
+
+	});
 
 	describe("requests without tools", () => {
 
@@ -336,9 +390,9 @@ describe("createGoogleAI", () => {
 			});
 		}
 
-		it("resumes a request rejected over the quota after the advertised delay", async () => {
+		it.each(["0s", "0.01s"])("resumes a request rejected over the quota after an advertised delay of %s", async delay => {
 
-			const requests = stub({ turns: [exhausted("0s")] });
+			const requests = stub({ turns: [exhausted(delay)] });
 
 			const response = await submit({ model: "gemini-3-flash", contents: "query" });
 
@@ -365,6 +419,24 @@ describe("createGoogleAI", () => {
 			await expect(submit({ model: "gemini-3-flash", contents: "query" })).rejects.toThrow(ApiError);
 
 			expect(requests()).toHaveLength(1);
+
+		});
+
+		it("resumes a request of other model methods rejected over the quota", async () => {
+
+			const values = [1, 2];
+
+			embed
+				.mockRejectedValueOnce(exhausted("0s"))
+				.mockResolvedValue(Object.assign(new EmbedContentResponse(), { embeddings: [{ values }] }));
+
+			const response = await createGoogleAI({ apiKey: "test" }).models.embedContent({
+				model: "gemini-embedding-001",
+				contents: "query"
+			});
+
+			expect(embed).toHaveBeenCalledTimes(2);
+			expect(embedding(response)).toEqual(values);
 
 		});
 
@@ -517,12 +589,21 @@ describe("createGoogleAI", () => {
 
 });
 
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 describe("text", () => {
 
 	it("joins the output text of the parts generated for the caller", async () => {
 
-		expect(output(generated({ parts: [{ text: " one " }, { text: "skipped", thought: true }, { text: "two" }] })))
-			.toBe("one \n\ntwo");
+		expect(output(generated({
+			parts: [
+				{ text: " one " },
+				{ text: "skipped", thought: true },
+				{ functionCall: { name: "lookup", args: {} } },
+				{ text: "two" }
+			]
+		}))).toBe("one \n\ntwo");
 
 	});
 
@@ -581,20 +662,14 @@ describe("embedding", () => {
 });
 
 
-/**
- * Creates a response carrying a single candidate, with model content only if parts are given.
- */
-function generated({ parts, finishReason = FinishReason.STOP, usage }: {
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	readonly parts?: readonly Part[]
-	readonly finishReason?: FinishReason
-	readonly usage?: GenerateContentResponseUsageMetadata
+describe("@google/genai", () => {
 
-}): GenerateContentResponse {
+	it("re-exports the whole SDK surface", async () => {
 
-	return Object.assign(new GenerateContentResponse(), {
-		candidates: [{ finishReason, ...(parts ? { content: { role: "model", parts: [...parts] } } : {}) }],
-		usageMetadata: usage
+		expect(connectors).toMatchObject(sdk);
+
 	});
 
-}
+});

@@ -33,6 +33,7 @@
   "packageOptions": {
     "tsconfig": "./tsconfig.build.json",
     "includeVersion": true,
+    "excludeExternals": true,
     "sortEntryPoints": false,
     "sort": [
       "source-order"

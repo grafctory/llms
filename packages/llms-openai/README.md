@@ -19,6 +19,12 @@ npm install @metreeca/llms-openai  # this package
 >
 > Node.js 22 or later is required.
 
+> [!IMPORTANT]
+>
+> This package stands in for the OpenAI Node API Library: import SDK values and types from here, never from `openai`.
+> It ships the SDK release its workarounds are tested against. A separately installed copy may be another release,
+> and the client then no longer matches the SDK types the consumer imports from that copy.
+
 > [!WARNING]
 >
 > TypeScript consumers must use `"moduleResolution": "nodenext"/"node16"/"bundler"` in `tsconfig.json`.

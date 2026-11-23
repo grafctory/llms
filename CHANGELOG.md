@@ -7,7 +7,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.5.0](https://github.com/metreeca/llms/compare/v0.4.0...HEAD)
 
+### Added
+
+- `@metreeca/llms-google` and `@metreeca/llms-openai` re-export the whole surface of their provider SDK
+  ([#7](https://github.com/metreeca/llms/issues/7)), so pipelines import SDK values and types from the connector,
+  always matching its client, and never declare `@google/genai` or `openai` as dependencies of their own
+
 ### Changed
+
+- `@metreeca/llms-google` requires `@google/genai` `~2.30.0` and `@metreeca/llms-openai` requires `openai` `~7.25.0`,
+  pinning each connector to the SDK release its workarounds are tested against, rather than any later minor release
 
 - **Breaking**: `@metreeca/llms-google` — a requested response schema is submitted with every request carrying tools,
   and a model rejecting it fails with the API error rather than replying through a hidden `gemini-2.5-flash-lite`
