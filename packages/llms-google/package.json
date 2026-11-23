@@ -1,6 +1,6 @@
 {
   "name": "@metreeca/llms-google",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Google model connectors for @metreeca/llms.",
   "keywords": [
     "typescript",
@@ -50,7 +50,7 @@
     "@google/genai": "^2.28.0",
     "@metreeca/core": "^0.14.0",
     "@metreeca/http": "^0.6.0",
-    "@metreeca/llms": "^0.4.0",
+    "@metreeca/llms": "^0.5.0",
     "@metreeca/tape": "^0.13.0"
   },
   "devDependencies": {

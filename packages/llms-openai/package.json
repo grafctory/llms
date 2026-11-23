@@ -1,6 +1,6 @@
 {
   "name": "@metreeca/llms-openai",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "OpenAI model connectors for @metreeca/llms.",
   "keywords": [
     "typescript",
@@ -50,7 +50,7 @@
   "dependencies": {
     "@metreeca/core": "^0.14.0",
     "@metreeca/http": "^0.6.0",
-    "@metreeca/llms": "^0.4.0",
+    "@metreeca/llms": "^0.5.0",
     "@metreeca/tape": "^0.13.0",
     "openai": "^7.25.0"
   },
