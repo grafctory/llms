@@ -13,7 +13,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#7](https://github.com/metreeca/llms/issues/7)), so pipelines import SDK values and types from the connector,
   always matching its client, and never declare `@google/genai` or `openai` as dependencies of their own
 
+- `createGoogleAI` and `createOpenAI` take `labels`, fixed or computed on each request, attached where the provider
+  accepts them, and log the model, labels and token usage of every request
+  ([#8](https://github.com/metreeca/llms/issues/8)), so a cost spike can be traced to the job causing it from the log
+
+- `@metreeca/llms/quotas` and `@metreeca/llms/usage` — model rate quotas and usage tracing for model connectors
+  ([#8](https://github.com/metreeca/llms/issues/8)), so concurrent jobs drawing on the same model are paced together
+  and every request logs its token usage under the labels of the source it is charged to
+
 ### Changed
+
+- **Breaking**: `@metreeca/llms` — the root entry point is replaced by the `vectors`, `quotas` and `usage` entry points,
+  and the embedding vector primitives are imported from `@metreeca/llms/vectors` rather than from `@metreeca/llms`
 
 - `@metreeca/llms-google` requires `@google/genai` `~2.30.0` and `@metreeca/llms-openai` requires `openai` `~7.25.0`,
   pinning each connector to the SDK release its workarounds are tested against, rather than any later minor release

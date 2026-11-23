@@ -5,7 +5,8 @@
 Google model connectors for [@metreeca/llms](https://github.com/metreeca/llms).
 
 Connects AI jobs to Google models, ready to work alongside any other task in a pipeline. Long runs proceed reliably to
-completion, and every result a job receives from a model can be trusted as complete.
+completion, and every result a job receives from a model can be trusted as complete. The cost of each request is logged
+under the labels of the job issuing it, so any spike can be traced back to its source.
 
 # Installation
 

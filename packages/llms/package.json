@@ -27,9 +27,17 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": {
-      "@metreeca/source": "./src/index.ts",
-      "default": "./dist/index.js"
+    "./vectors": {
+      "@metreeca/source": "./src/vectors.ts",
+      "default": "./dist/vectors.js"
+    },
+    "./quotas": {
+      "@metreeca/source": "./src/quotas.ts",
+      "default": "./dist/quotas.js"
+    },
+    "./usage": {
+      "@metreeca/source": "./src/usage.ts",
+      "default": "./dist/usage.js"
     }
   },
   "files": [
@@ -46,7 +54,8 @@
     "check": "npx vitest --typecheck run"
   },
   "dependencies": {
-    "@metreeca/core": "^0.14.0"
+    "@metreeca/core": "^0.14.0",
+    "@metreeca/tape": "^0.13.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

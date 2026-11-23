@@ -4,8 +4,8 @@
 
 AI tasks and shared services for [@metreeca/llms](https://github.com/metreeca/llms).
 
-Provides primitives for working with embedding vectors from any model provider: condensing the fields of a resource into
-the text to be embedded, ranking vectors by semantic proximity, and storing them in a compact textual form.
+Provides the building blocks shared by AI jobs and the model connectors serving them, from embedding vectors that work
+with any model provider to model calls kept within rate quotas and traced to the source of their cost.
 
 Jobs using them are set up and run under the [@metreeca/gear](https://github.com/metreeca/gear) job executor. This
 package contributes building blocks for those jobs, not an execution runtime of its own.
@@ -28,11 +28,17 @@ npm install @metreeca/llms  # this package
 
 # Usage
 
-| Module                 | Description                  |
-|------------------------|------------------------------|
-| [@metreeca/llms][llms] | AI tasks and shared services |
+| Module                            | Description         |
+|-----------------------------------|---------------------|
+| [@metreeca/llms/vectors][vectors] | Embedding vectors   |
+| [@metreeca/llms/quotas][quotas]   | Model rate quotas   |
+| [@metreeca/llms/usage][usage]     | Model usage tracing |
 
-[llms]: https://metreeca.github.io/llms/modules/_metreeca_llms.html
+[vectors]: https://metreeca.github.io/llms/modules/_metreeca_llms.vectors.html
+
+[quotas]: https://metreeca.github.io/llms/modules/_metreeca_llms.quotas.html
+
+[usage]: https://metreeca.github.io/llms/modules/_metreeca_llms.usage.html
 
 # Support
 

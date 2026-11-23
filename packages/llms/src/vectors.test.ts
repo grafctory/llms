@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { compress, cosine, decompress } from "./index.js";
+import { compress, cosine, decompress } from "./vectors.js";
 
 
 describe("distance", () => {

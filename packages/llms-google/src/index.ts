@@ -18,7 +18,8 @@
  * Google model connectors.
  *
  * Connects AI jobs to Google models, ready to work alongside any other task in a pipeline. Long runs proceed reliably
- * to completion, and every result a job receives from a model can be trusted as complete.
+ * to completion, and every result a job receives from a model can be trusted as complete. The cost of each request is
+ * logged under the labels of the job issuing it, so any spike can be traced back to its source.
  *
  * Stands in for the Google GenAI SDK, whose whole surface it re-exports: import SDK values and types from here rather
  * than from `@google/genai`, so they always match the client and no direct dependency on the SDK is needed.
@@ -29,13 +30,16 @@
  * @see {@link https://googleapis.github.io/js-genai/release_docs/index.html Google GenAI SDK}
  */
 
-import type { Vector } from "@metreeca/llms";
+import { charge, type Labels } from "@metreeca/llms/usage";
+import { createQuota } from "@metreeca/llms/quotas";
+import type { Vector } from "@metreeca/llms/vectors";
 import {
 	ApiError,
 	CallableTool,
 	Content,
 	ContentListUnion,
 	EmbedContentResponse,
+	GenerateContentParameters,
 	GenerateContentResponse,
 	GenerateContentResponseUsageMetadata,
 	GoogleGenAI,
@@ -43,19 +47,11 @@ import {
 	ModalityTokenCount,
 	Part
 } from "@google/genai";
-import { error, isString, memo, type Value } from "@metreeca/core";
-import { createThrottle, type Throttle } from "@metreeca/core/async";
+import { eager, error, isString, type Lazy, memo, type Value } from "@metreeca/core";
 import { TooManyRequests } from "@metreeca/http";
-import { log, Logger, report } from "@metreeca/tape";
+import { report } from "@metreeca/tape";
 
 export * from "@google/genai";
-
-
-/**
- * The number of attempts a request is submitted for, the initial one included, before a transient rejection is handed
- * over to the throttle (see {@link createGoogleAI}).
- */
-const attempts = 5;
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -70,7 +66,10 @@ const attempts = 5;
  * @param options The client options, as accepted by the {@link GoogleGenAI} constructor; if omitted, the SDK defaults
  *                apply, reading the API key for the Gemini API from the environment. Vertex AI is reached instead by
  *                setting `vertexai`, `project` and `location`, with Google Cloud project credentials. Unless
- *                `httpOptions.retryOptions` is set, a request failing transiently is attempted up to 5 times in total
+ *                `httpOptions.retryOptions` is set, a request failing transiently is retried as the SDK does by default
+ * @param options.labels The labels identifying the cost source of the requests the client issues, either fixed or
+ *                       computed on each request, so that they can name the job issuing it from the context it runs
+ *                       in; merged with the `config.labels` of the request, which win on shared keys
  *
  * @returns A client sharing throttling and logging among requests to the same model; models are told apart by their
  *          exact id, so the bare and `models/`-prefixed forms of an id are paced separately, even though both draw
@@ -106,12 +105,27 @@ const attempts = 5;
  * `initialPromptTokenCount` is taken from the first turn and `trafficType` from the last: a prompt size and a billing
  * tier each describe a single request and do not add up across the several turns of a generation.
  *
+ * Every response to a content generation request, streamed or not, is logged with its model, labels and token usage,
+ * one entry per request, so a cost spike can be traced to the job causing it from the log alone. Input tokens include
+ * those spent on tool use prompts, output tokens those spent on reasoning, which are also stated on their own.
+ *
+ * Labels are attached to content, image and video generation requests on Vertex AI alone, where they also split billing
+ * reports. Vertex AI accepts at most 64 labels per request, with keys and values of up to 63 lowercase letters, digits,
+ * underscores and dashes, keys opening with a letter. The client labels, merged with the `config.labels` of the request,
+ * are brought within these limits before they are attached, so that a path such as `/events/coimbra-university` is
+ * always sent as `events-coimbra-university`, and they are logged as supplied. Where they exceed the label count, client
+ * labels are dropped first. The Gemini Developer API rejects labels altogether, so there they are only logged.
+ *
  * @see {@link https://ai.google.dev/gemini-api/docs/function-calling Function calling}
  * @see {@link https://ai.google.dev/gemini-api/docs/structured-output Structured output}
  * @see {@link https://ai.google.dev/gemini-api/docs/rate-limits Rate limits}
  * @see {@link https://github.com/googleapis/js-genai/issues/727 js-genai#727}
  */
-export function createGoogleAI(options: GoogleGenAIOptions = {}) {
+export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions & {
+
+	readonly labels?: Lazy<Labels>
+
+} = {}) {
 
 	const ai = new GoogleGenAI({
 
@@ -122,7 +136,7 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 			// the SDK retries a transient rejection only where retry options are stated, otherwise
 			// failing the request outright: a spike in demand on the model would abort a whole run
 
-			retryOptions: { attempts },
+			retryOptions: {},
 
 			...options.httpOptions
 
@@ -131,43 +145,15 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 	});
 
 	/**
-	 * Retrieves the request channel shared by all requests to a model, opening it on first request.
+	 * Retrieves the rate quota shared by all requests to a model, opening it on first request.
 	 *
-	 * Channels are memoised by model id exactly as supplied, so the bare and `models/`-prefixed forms of the same
-	 * model are throttled and logged independently, each under a category naming the model alone rather than this
-	 * module, so that a run reads as a list of models rather than of repeated module paths.
+	 * Quotas are keyed by exact model id, so bare and `models/`-prefixed ids are paced apart.
 	 *
 	 * @param model The target model name
 	 *
-	 * @returns The channel registered for `model`, retained for the lifetime of the client (see {@link memo})
+	 * @returns The quota registered for `model`, retained for the lifetime of the client (see {@link memo})
 	 */
-	const channels = memo<string, {
-
-		logger: Logger
-		throttle: Throttle
-
-	}>(model => ({
-
-		logger: log(["/", model]),
-
-		// !!! the floor is a magic 600 rpm: derive it from the rpm published for the model, that is as
-		// !!! `60_000/rpm`, so that the pace is stated by the quota rather than guessed
-
-		// !!! a floor states requests per minute only: the token and daily quotas are not a function of
-		// !!! elapsed time and are left unguarded
-
-		// !!! quotas are enforced per project, while channels are opened per model: models running
-		// !!! concurrently overrun a shared quota, each pacing correctly on its own
-
-		throttle: createThrottle({
-			minimum: 100,
-			maximum: 60*1000,
-			buildup: 1.10,
-			backoff: 1.10,
-			recover: 0.95
-		})
-
-	}));
+	const quotas = memo(createQuota);
 
 
 	return Object.assign(ai, { // patch to work around known issues
@@ -180,7 +166,29 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 					return config?.tools
 						? await execute()
-						: await submit(params.model, () => generateContent({ ...params, config }, ...rest));
+						: await generate({ ...params, config });
+
+
+					/**
+					 * Submits a single labelled model request under the throttle of the target model, logging its usage.
+					 *
+					 * @param request The request to submit
+					 *
+					 * @returns The model response to `request`
+					 *
+					 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
+					 */
+					async function generate(request: GenerateContentParameters) {
+
+						const [tags, $request] = labelled(request);
+
+						const response = await quotas(request.model)(() => generateContent($request, ...rest), quota);
+
+						record(request.model, tags, response.usageMetadata);
+
+						return response;
+
+					}
 
 
 					/**
@@ -319,7 +327,7 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 						 */
 						async function request(contents: ContentListUnion) {
 
-							return await submit(params.model, () => generateContent({
+							return await generate({
 								...params,
 								contents,
 
@@ -334,7 +342,7 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 								}
 
-							}, ...rest));
+							});
 
 						}
 
@@ -344,59 +352,31 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 
 			)(ai.models.generateContent.bind(ai.models)),
 
-			generateContentStream: throttled(ai.models.generateContentStream.bind(ai.models)),
+			generateContentStream: (generateContentStream =>
+
+					async (params: GenerateContentParameters) => {
+
+						const [tags, $params] = labelled(params);
+
+						const chunks = await quotas(params.model)(() => generateContentStream($params), quota);
+
+						return relay(params.model, tags, chunks);
+
+					}
+
+			)(ai.models.generateContentStream.bind(ai.models)),
 			embedContent: throttled(ai.models.embedContent.bind(ai.models)),
 
 			countTokens: throttled(ai.models.countTokens.bind(ai.models)),
 			computeTokens: throttled(ai.models.computeTokens.bind(ai.models)),
 
-			generateImages: throttled(ai.models.generateImages.bind(ai.models)),
-			generateVideos: throttled(ai.models.generateVideos.bind(ai.models))
+			generateImages: throttled(tagged(ai.models.generateImages.bind(ai.models))),
+			generateVideos: throttled(tagged(ai.models.generateVideos.bind(ai.models)))
 
 		})
 
 	});
 
-
-	/**
-	 * Submits a request under the throttle of the model it targets.
-	 *
-	 * Requests to the same model are paced against a shared adaptive throttle, so that concurrent consumers of a model
-	 * keep within its published rate quota, and a rejection reporting a `RetryInfo` delay is retried after the delay
-	 * the API advertises rather than at a pace of the client's own.
-	 *
-	 * @param model The target model name, keying the channel the request is paced against (see {@link channels})
-	 * @param request The request to submit
-	 *
-	 * @returns The value `request` resolves to
-	 *
-	 * @throws {ApiError} If the request fails for a reason the quota recovery doesn't handle
-	 */
-	function submit<V>(model: string, request: () => Promise<V>): Promise<V> {
-
-		const { throttle, logger } = channels(model);
-
-		return throttle.retry(request, {
-
-			recover: quota,
-
-			monitor: (attempt, attempts, elapsed) => {
-
-				const count = attempts > 0 ? `${attempt+1}/${attempts}` : `${attempt+1}`;
-
-				if ( elapsed === undefined ) {
-					logger.error`request attempt ${count} aborted`;
-				} else if ( attempt > 0 ) {
-					logger.warning`request attempt ${count} rejected with delay ${elapsed} ms`;
-				} else {
-					logger.info`request attempt ${count} submitted with delay ${elapsed} ms`;
-				}
-
-			}
-
-		});
-
-	}
 
 	/**
 	 * States the delay a request rejected over the rate quota is to be retried after.
@@ -438,11 +418,110 @@ export function createGoogleAI(options: GoogleGenAIOptions = {}) {
 	 *
 	 * @param method The model method to adapt
 	 *
-	 * @returns A method submitting the requests of `method` through {@link submit}
+	 * @returns A method submitting the requests of `method` under the quota of their model (see {@link quotas})
 	 */
 	function throttled<P extends { model: string }, V>(method: (params: P) => Promise<V>): (params: P) => Promise<V> {
 
-		return params => submit(params.model, () => method(params));
+		return params => quotas(params.model)(() => method(params), quota);
+
+	}
+
+	/**
+	 * Adapts a model method into one attaching the client labels to its requests.
+	 *
+	 * @typeParam P The type of the request parameters, carrying the request labels
+	 * @typeParam V The type of the value the method resolves to
+	 *
+	 * @param method The model method to adapt
+	 *
+	 * @returns A method submitting the requests of `method` as labelled by {@link labelled}
+	 */
+	function tagged<P extends { readonly config?: { readonly labels?: Record<string, string> } }, V>(
+		method: (params: P) => Promise<V>
+	): (params: P) => Promise<V> {
+
+		return params => method(labelled(params)[1]);
+
+	}
+
+	/**
+	 * Labels a request with the client labels.
+	 *
+	 * The client labels are computed anew for each request, so that they can name the job issuing it.
+	 *
+	 * @typeParam P The type of the request parameters, carrying the request labels
+	 *
+	 * @param params The request to label
+	 *
+	 * @returns The client labels merged with the request ones, which win on shared keys, paired with `params` carrying
+	 *          them on Vertex AI brought within its limits (see {@link normalise}), or left as they stand on the Gemini
+	 *          Developer API, which rejects labels in any form, request labels included
+	 */
+	function labelled<P extends { readonly config?: { readonly labels?: Record<string, string> } }>(
+		params: P
+	): [Labels, P] {
+
+		const request = params.config?.labels;
+
+		// request labels lead, so that the provider count limit drops client labels first, and win on shared keys
+
+		const tags = { ...request, ...eager(labels), ...request };
+
+		return [tags, ai.vertexai ? { ...params, config: { ...params.config, labels: normalise(tags) } } : params];
+
+	}
+
+	/**
+	 * Relays a streamed generation, logging its usage once it ends.
+	 *
+	 * Usage is stated as accumulated so far by each chunk, so the last one stating it accounts for the whole request;
+	 * a stream abandoned or failing before completion is logged with the usage stated up to that point.
+	 *
+	 * @param model The model the request was submitted to
+	 * @param tags The labels the request was submitted with
+	 * @param chunks The streamed generation
+	 *
+	 * @returns The chunks of `chunks`, as they stand
+	 */
+	async function* relay(
+		model: string,
+		tags: Labels,
+		chunks: AsyncGenerator<GenerateContentResponse>
+	): AsyncGenerator<GenerateContentResponse> {
+
+		let usage: undefined | GenerateContentResponseUsageMetadata; // ;(let) accumulated across async iteration
+
+		try {
+
+			for await (const chunk of chunks) { // ;(loop) relays an async stream, one chunk at a time
+				usage = chunk.usageMetadata ?? usage;
+				yield chunk;
+			}
+
+		} finally {
+
+			record(model, tags, usage);
+
+		}
+
+	}
+
+	/**
+	 * Logs the usage of a request.
+	 *
+	 * @param model The model the request was submitted to
+	 * @param tags The labels the request was submitted with
+	 * @param usage The usage stated by the response to the request, if any
+	 */
+	function record(model: string, tags: Labels, usage: undefined | GenerateContentResponseUsageMetadata) {
+
+		const reasoning = usage?.thoughtsTokenCount ?? 0;
+
+		charge(model, tags, {
+			input: (usage?.promptTokenCount ?? 0)+(usage?.toolUsePromptTokenCount ?? 0),
+			output: (usage?.candidatesTokenCount ?? 0)+reasoning,
+			reasoning
+		});
 
 	}
 
@@ -571,6 +650,46 @@ function combine(
 					.reduce((total, { tokenCount }) => total+(tokenCount ?? 0), 0)
 			}));
 
+	}
+
+}
+
+/**
+ * Brings labels within the limits Vertex AI sets on request labels.
+ *
+ * Lets free-form labels, such as the `/events/coimbra-university` path of a job, be attached to requests:
+ *
+ * - keys and values are lowercased and stripped of diacritics
+ * - every run of characters other than letters, digits, underscores and dashes is replaced by a single dash
+ * - leading characters are ignored until a letter opens a key, or a letter or a digit opens a value
+ * - separators closing a key or a value are ignored, and both are clipped to 63 characters
+ * - entries whose key is left empty are dropped, and only the first 64 entries are kept
+ *
+ * @param labels The labels to normalise
+ *
+ * @returns The labels in `labels` rewritten within the Vertex AI limits, conforming labels unchanged
+ *
+ * @see {@link https://cloud.google.com/vertex-ai/docs/general/labels Vertex AI labels}
+ */
+function normalise(labels: Labels): Labels {
+
+	const normalised = Object.fromEntries(Object.entries(labels)
+		.map(([key, value]): [string, string] => [clean(key, /^[^a-z]+/), clean(value, /^[^a-z0-9]+/)])
+		.filter(([key]) => key !== "")
+	);
+
+	return Object.fromEntries(Object.entries(normalised).slice(0, 64));
+
+
+	function clean(text: string, lead: RegExp): string {
+		return text
+			.normalize("NFKD")
+			.replace(/\p{M}+/gu, "")
+			.toLowerCase()
+			.replace(/[^a-z0-9_-]+/g, "-")
+			.replace(lead, "")
+			.slice(0, 63)
+			.replace(/[-_]+$/, "");
 	}
 
 }

@@ -18,7 +18,8 @@
  * OpenAI model connectors.
  *
  * Connects AI jobs to OpenAI models, ready to work alongside any other task in a pipeline. Long runs proceed reliably
- * to completion, and every result a job receives from a model can be trusted as complete.
+ * to completion, and every result a job receives from a model can be trusted as complete. The cost of each request is
+ * logged under the labels of the job issuing it, so any spike can be traced back to its source.
  *
  * Stands in for the OpenAI Node API Library, re-exporting its whole surface, default export included: import SDK values
  * and types from here rather than from `openai`, so they always match the client without a direct SDK dependency.
@@ -30,16 +31,19 @@
  * @see {@link https://github.com/openai/openai-node OpenAI Node API Library}
  */
 
-import type { Vector } from "@metreeca/llms";
-import { error, isObject, isString, memo, type Value } from "@metreeca/core";
-import { createThrottle, type Throttle } from "@metreeca/core/async";
+import { charge, type Labels } from "@metreeca/llms/usage";
+import { createQuota } from "@metreeca/llms/quotas";
+import type { Vector } from "@metreeca/llms/vectors";
+import { eager, error, isObject, isString, type Lazy, memo, type Value } from "@metreeca/core";
 import { TooManyRequests } from "@metreeca/http";
-import { log, type Logger, report } from "@metreeca/tape";
+import { report } from "@metreeca/tape";
 import { type ClientOptions, OpenAI } from "openai";
 
 export * from "openai";
 export { default } from "openai";
 
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
  * The error code the API reports when the account has no quota left to spend.
@@ -47,6 +51,7 @@ export { default } from "openai";
  * @see {@link https://platform.openai.com/docs/guides/error-codes API error codes}
  */
 const Exhausted = "insufficient_quota";
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -92,6 +97,9 @@ class Limited extends Error {
  * @param options The client options, as accepted by the {@link OpenAI} constructor; if omitted, the SDK defaults
  *                apply, reading the API key from the environment. A custom `fetch` is retained and
  *                issues every request, paced or not, so transport customisations keep applying
+ * @param options.labels The labels identifying the cost source of the requests the client issues, either fixed or
+ *                       computed on each request, so that they can name the job issuing it from the context it runs
+ *                       in; merged with the `metadata` of the request, which wins on shared keys
  *
  * @returns A client sharing throttling and logging among all requests naming the same model. Models are told apart
  *          by their exact id, so variant spellings of a model are paced independently
@@ -110,54 +118,47 @@ class Limited extends Error {
  * account is returned as it stands, as no delay recovers from it. Requests naming no model, such as listing files or
  * models, and requests whose payload cannot be sent twice, such as streamed uploads, are issued unpaced.
  *
- * The SDK bypasses pacing when X.509 workload identity credentials are supplied: a client authenticated that way is
- * served through the SDK transport and left unpaced. Retrying is left to the SDK for everything but the rate quota,
- * so `maxRetries` still governs recovery from network failures and server errors.
+ * Retrying is left to the SDK for everything but the rate quota, so `maxRetries` still governs recovery from network
+ * failures and server errors exactly as it does on a client created directly through the SDK constructor.
+ *
+ * Every response to a request naming a model, streamed or not, is logged with its model, labels and token usage, one
+ * entry per request, so a cost spike can be traced to the job causing it from the log alone: OpenAI billing is split
+ * by project and API key alone, never by labels. Output tokens include those spent on reasoning, which are also stated
+ * on their own. Usage is requested on streamed chat completions not asking for it, and the chunk carrying it is
+ * withheld from the stream, so the caller receives the same chunks it would have received without the request.
+ *
+ * Labels are attached as `metadata` to response requests and to chat completion requests setting `store`, as the API
+ * keeps metadata only on stored objects and the other endpoints accept none; other requests carry labels in the log
+ * alone. The API accepts at most 16 entries, with keys of up to 64 characters and values of up to 512 characters. The
+ * client labels, merged with the `metadata` of the request, are brought within these limits before they are attached,
+ * dropping client labels first beyond 16 entries and clipping longer keys and values, and they are logged as supplied.
+ *
+ * > [!WARNING]
+ * >
+ * > A client authenticated with X.509 workload identity credentials is served by the SDK transport alone: its requests
+ * > are neither paced nor logged, and carry no labels beyond the `metadata` each request states for itself.
  *
  * @see {@link https://platform.openai.com/docs/guides/rate-limits Rate limits}
  * @see {@link https://platform.openai.com/docs/guides/error-codes API error codes}
  */
-export function createOpenAI(options: ClientOptions = {}) {
+export function createOpenAI({ labels = {}, ...options }: ClientOptions & {
+
+	readonly labels?: Lazy<Labels>
+
+} = {}) {
 
 	const dispatch = options.fetch ?? fetch;
 
 	/**
-	 * Retrieves the request channel shared by all requests to a model, opening it on first request.
+	 * Retrieves the rate quota shared by all requests to a model, opening it on first request.
 	 *
-	 * Channels are memoised by model id exactly as submitted, each logging under a category naming the model alone
-	 * rather than this module, so that a run reads as a list of models rather than of repeated module paths.
+	 * Quotas are memoised by model id exactly as submitted.
 	 *
 	 * @param model The target model name
 	 *
-	 * @returns The channel registered for `model`, retained for the lifetime of the client (see {@link memo})
+	 * @returns The quota registered for `model`, retained for the lifetime of the client (see {@link memo})
 	 */
-	const channels = memo<string, {
-
-		logger: Logger
-		throttle: Throttle
-
-	}>(model => ({
-
-		logger: log(["/", model]),
-
-		// !!! the floor is a magic 600 rpm: derive it from the rpm published for the model, that is as
-		// !!! `60_000/rpm`, so that the pace is stated by the quota rather than guessed
-
-		// !!! a floor states requests per minute only: the token and daily quotas are not a function of
-		// !!! elapsed time and are left unguarded
-
-		// !!! quotas are enforced per project, while channels are opened per model: models running
-		// !!! concurrently overrun a shared quota, each pacing correctly on its own
-
-		throttle: createThrottle({
-			minimum: 100,
-			maximum: 60*1000,
-			buildup: 1.10,
-			backoff: 1.10,
-			recover: 0.95
-		})
-
-	}));
+	const quotas = memo(createQuota);
 
 
 	return new OpenAI({ ...options, fetch: submit });
@@ -183,35 +184,138 @@ export function createOpenAI(options: ClientOptions = {}) {
 
 		} else {
 
-			const { logger, throttle } = channels(model);
+			const { tags, request, withhold } = label(input, init);
 
-			return await throttle.retry(async () => {
+			return track(model, tags, withhold, await quotas(model)(async () => {
 
-				const response = await dispatch(input, init);
+				const response = await dispatch(input, request);
 				const delay = await limited(response);
 
 				return delay === undefined ? response : error(new Limited(delay));
 
-			}, {
+			}, error => error instanceof Limited ? error.delay : undefined));
 
-				recover: error => error instanceof Limited ? error.delay : undefined,
+		}
 
-				monitor: (attempt, attempts, elapsed) => {
+	}
 
-					const count = attempts > 0 ? `${attempt+1}/${attempts}` : `${attempt+1}`;
+	/**
+	 * Labels a request with the client labels.
+	 *
+	 * The client labels are computed anew for each request, so that they can name the job issuing it.
+	 *
+	 * @param input The endpoint the request is addressed to
+	 * @param init The request to label
+	 *
+	 * @returns The labels to log, merging the client labels with the request `metadata`, which wins on shared keys; the
+	 *          request to dispatch, carrying those labels as `metadata` within the API limits (see {@link normalise}) on
+	 *          response and stored chat completion requests; and whether usage was requested on behalf of the client,
+	 *          in which case the chunk carrying it is withheld from a caller that never asked for it
+	 */
+	function label(input: string | URL | Request, init?: RequestInit): {
 
-					if ( elapsed === undefined ) {
-						logger.error`request attempt ${count} aborted`;
-					} else if ( attempt > 0 ) {
-						logger.warning`request attempt ${count} rejected with delay ${elapsed} ms`;
-					} else {
-						logger.info`request attempt ${count} submitted with delay ${elapsed} ms`;
-					}
+		readonly tags: Labels
+		readonly request?: RequestInit
+		readonly withhold: boolean
 
+	} {
+
+		const path = new URL(input instanceof Request ? input.url : input).pathname;
+		const payload = isString(init?.body) ? decode(init.body) : undefined;
+		const chat = path.endsWith("/chat/completions");
+		const client = eager(labels);
+
+		if ( !isObject(payload) || !(chat || path.endsWith("/responses")) ) {
+
+			return { tags: client, request: init, withhold: false };
+
+		} else {
+
+			const metadata = strings(payload["metadata"]);
+
+			// request metadata leads, so that the API entry limit drops client labels first, and wins on shared keys
+
+			const tags = { ...metadata, ...client, ...metadata };
+			const attached = normalise(tags);
+			const options = isObject(payload["stream_options"]) ? payload["stream_options"] : {};
+
+			// chat completions take metadata on stored completions alone, while responses are stored by default
+
+			const attach = Object.keys(attached).length > 0 && (!chat || payload["store"] === true);
+			const withhold = chat && payload["stream"] === true && options["include_usage"] !== true;
+
+			return {
+
+				tags, withhold, request: {
+					...init, body: JSON.stringify({
+						...payload,
+						...(attach ? { metadata: attached } : {}),
+						...(withhold ? { stream_options: { ...options, include_usage: true } } : {})
+					})
 				}
 
+			};
+
+		}
+
+	}
+
+	/**
+	 * Logs the usage of a response.
+	 *
+	 * @param model The model the request was submitted to
+	 * @param tags The labels the request was submitted with
+	 * @param withhold Whether the chunk carrying usage is to be withheld from a streamed response
+	 * @param response The response to the request
+	 *
+	 * @returns A response equivalent to `response`, relaying a streamed body chunk by chunk as it arrives
+	 */
+	async function track(model: string, tags: Labels, withhold: boolean, response: Response): Promise<Response> {
+
+		const type = response.headers.get("content-type") ?? "";
+
+		if ( !response.ok || response.body === null ) {
+
+			return response;
+
+		} else if ( type.includes("text/event-stream") ) {
+
+			return new Response(response.body
+				.pipeThrough(new TextDecoderStream())
+				.pipeThrough(relay(withhold, usage => record(model, tags, usage)))
+				.pipeThrough(new TextEncoderStream()), {
+				status: response.status,
+				statusText: response.statusText,
+				headers: response.headers
 			});
 
+		} else if ( type.includes("application/json") ) {
+
+			record(model, tags, decode(await response.clone().text()));
+
+			return response;
+
+		} else {
+
+			return response;
+
+		}
+
+	}
+
+	/**
+	 * Logs the usage of a request.
+	 *
+	 * @param model The model the request was submitted to
+	 * @param tags The labels the request was submitted with
+	 * @param payload The response payload stating the usage of the request; nothing is logged if it states none
+	 */
+	function record(model: string, tags: Labels, payload: unknown) {
+
+		const usage = consumed(payload);
+
+		if ( usage !== undefined ) {
+			charge(model, tags, usage);
 		}
 
 	}
@@ -408,6 +512,168 @@ function delay(headers: Headers): number {
 		return 0;
 
 	}
+
+}
+
+/**
+ * Relays a server-sent event stream, tracking the usage it states.
+ *
+ * @param withhold Whether the chunk carrying usage is to be withheld, as requested on behalf of the client
+ * @param done The callback receiving the last payload stating usage, if any, once the stream ends; usage is stated
+ *             by the closing event alone, so a stream cancelled before it has none to log
+ *
+ * @returns A stream relaying server-sent events as they arrive, withholding the usage chunk if `withhold` is set
+ */
+function relay(withhold: boolean, done: (payload: unknown) => void): TransformStream<string, string> {
+
+	let pending = ""; // ;(let) an event split across chunks, carried over to the next one
+	let usage: unknown; // ;(let) the last payload stating usage so far, logged once the stream ends
+
+	return new TransformStream<string, string>({
+
+		transform(text, controller) {
+
+			const events = `${pending}${text}`.split(/\r?\n\r?\n/);
+
+			pending = events.at(-1) ?? "";
+
+			forward(events.slice(0, -1), controller);
+
+		},
+
+		flush(controller) {
+
+			forward(pending.trim() ? [pending] : [], controller);
+
+			done(usage);
+
+		}
+
+	});
+
+
+	function forward(events: readonly string[], controller: TransformStreamDefaultController<string>) {
+
+		const payloads = events.map(event => ({ event, payload: data(event) }));
+
+		usage = payloads.reduce((last, { payload }) => consumed(payload) === undefined ? last : payload, usage);
+
+		const relayed = payloads
+			.filter(({ payload }) => !(withhold && metered(payload)))
+			.map(({ event }) => `${event}\n\n`);
+
+		if ( relayed.length > 0 ) {
+			controller.enqueue(relayed.join(""));
+		}
+
+	}
+
+}
+
+/**
+ * Extracts the payload of a server-sent event.
+ *
+ * @param event The event to inspect
+ *
+ * @returns The JSON value carried by the `data` fields of `event`, or undefined if they carry none
+ */
+function data(event: string): unknown {
+
+	return decode(event
+		.split(/\r?\n/)
+		.filter(line => line.startsWith("data:"))
+		.map(line => line.slice("data:".length).trimStart())
+		.join("\n")
+	);
+
+}
+
+/**
+ * States whether a chat completion chunk carries usage alone, as sent when usage is requested on a stream.
+ *
+ * @param payload The chunk to inspect
+ *
+ * @returns True if `payload` carries usage and no choice; false otherwise
+ */
+function metered(payload: unknown): boolean {
+
+	return isObject(payload)
+		&& Array.isArray(payload["choices"]) && payload["choices"].length === 0
+		&& isObject(payload["usage"]);
+
+}
+
+/**
+ * States the token usage of a response.
+ *
+ * Covers chat completions, embeddings and responses, streamed or not.
+ *
+ * @param payload The response payload to inspect
+ *
+ * @returns The token usage stated by `payload`, output tokens including reasoning, or undefined if it states none
+ */
+function consumed(payload: unknown) {
+
+	const usage = !isObject(payload) ? undefined
+		: isObject(payload["usage"]) ? payload["usage"]
+			: isObject(payload["response"]) && isObject(payload["response"]["usage"]) ? payload["response"]["usage"]
+				: undefined;
+
+	if ( usage === undefined ) {
+
+		return undefined;
+
+	} else {
+
+		const details = isObject(usage["completion_tokens_details"]) ? usage["completion_tokens_details"]
+			: isObject(usage["output_tokens_details"]) ? usage["output_tokens_details"]
+				: {};
+
+		return {
+			input: count(usage["prompt_tokens"] ?? usage["input_tokens"]),
+			output: count(usage["completion_tokens"] ?? usage["output_tokens"]),
+			reasoning: count(details["reasoning_tokens"])
+		};
+
+	}
+
+
+	function count(value: unknown): number {
+		return typeof value === "number" ? value : 0;
+	}
+
+}
+
+/**
+ * Brings labels within the limits the API sets on request metadata.
+ *
+ * @param labels The labels to normalise
+ *
+ * @returns The first 16 entries of `labels`, with keys clipped to 64 characters and values to 512
+ *
+ * @see {@link https://platform.openai.com/docs/api-reference/responses/create#responses-create-metadata Metadata}
+ */
+function normalise(labels: Labels): Labels {
+
+	return Object.fromEntries(Object.entries(labels)
+		.slice(0, 16)
+		.map(([key, value]) => [key.slice(0, 64), value.slice(0, 512)])
+	);
+
+}
+
+/**
+ * Extracts string labels from a request `metadata` value.
+ *
+ * @param value The value to inspect
+ *
+ * @returns The string-valued entries of `value`, or no label if it is not an object
+ */
+function strings(value: unknown): Labels {
+
+	return isObject(value)
+		? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => isString(entry[1])))
+		: {};
 
 }
 

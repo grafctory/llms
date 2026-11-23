@@ -15,18 +15,12 @@
  */
 
 /**
- * AI tasks and shared services.
+ * Embedding vectors.
  *
- * Provides primitives for working with embedding vectors from any model provider. A consumer can condense the fields
- * of a resource into the text to embed, rank vectors by semantic proximity, and store them compactly as text.
+ * Works with embedding vectors from any model provider: condense the fields of a resource into the text to embed, rank
+ * vectors by semantic proximity, and store them compactly as text, at a fraction of the size of their JSON form.
  *
- * > [!IMPORTANT]
- * >
- * > Jobs are set up and run with the executor, binder and service locator from
- * > {@link https://github.com/metreeca/gear @metreeca/gear}. This package contributes building blocks for those jobs,
- * > not an execution runtime of its own, and leaves service binding and resource release to the executor.
- *
- * @module index
+ * @module
  */
 
 import { some, type Some } from "@metreeca/core/arrays";
@@ -54,7 +48,7 @@ const Scale = 32767;
  * source.
  */
 export type Vector =
-	readonly number[];
+	readonly number[]
 
 /**
  * A distance between two vectors.
@@ -64,7 +58,7 @@ export type Vector =
  * the same measure.
  */
 export type Distance =
-	number;
+	number
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

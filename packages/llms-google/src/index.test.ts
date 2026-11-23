@@ -33,15 +33,17 @@ import {
 	TrafficType,
 	Type
 } from "@google/genai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { configureSync, resetSync, type Sink } from "@metreeca/tape";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 
 /**
  * Stand in for the options the SDK client is created with and for the requests it would submit to the Gemini API.
  */
-const { construct, generate, embed } = vi.hoisted(() => ({
+const { construct, generate, stream, embed } = vi.hoisted(() => ({
 	construct: vi.fn<(options: GoogleGenAIOptions) => void>(),
 	generate: vi.fn<(params: GenerateContentParameters) => Promise<GenerateContentResponse>>(),
+	stream: vi.fn<(params: GenerateContentParameters) => Promise<AsyncGenerator<GenerateContentResponse>>>(),
 	embed: vi.fn<(params: EmbedContentParameters) => Promise<EmbedContentResponse>>()
 }));
 
@@ -55,7 +57,11 @@ vi.mock("@google/genai", async importOriginal => {
 			constructor(options: GoogleGenAIOptions) {
 				super(options);
 				construct(options);
-				Object.assign(this.models, { generateContent: generate, embedContent: embed });
+				Object.assign(this.models, {
+					generateContent: generate,
+					generateContentStream: stream,
+					embedContent: embed
+				});
 			}
 
 		}
@@ -135,18 +141,19 @@ describe("createGoogleAI", () => {
 	afterEach(() => {
 		construct.mockReset();
 		generate.mockReset();
+		stream.mockReset();
 		embed.mockReset();
 	});
 
 
 	describe("retry options", () => {
 
-		it("attempts a transiently failing request up to 5 times by default", async () => {
+		it("retries a transiently failing request under the SDK default retry policy", async () => {
 
 			createGoogleAI({ apiKey: "test", httpOptions: { timeout: 1000 } });
 
 			expect(construct).toHaveBeenCalledWith(expect.objectContaining({
-				httpOptions: { timeout: 1000, retryOptions: { attempts: 5 } }
+				httpOptions: { timeout: 1000, retryOptions: {} }
 			}));
 
 		});
@@ -582,6 +589,321 @@ describe("createGoogleAI", () => {
 			const response = await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
 
 			expect(response.usageMetadata).toBeUndefined();
+
+		});
+
+	});
+
+	describe("labels", () => {
+
+		const vertex = { vertexai: true, project: "test", location: "us-central1" };
+
+		it("attaches fixed labels to requests on Vertex AI", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({ ...vertex, labels: { job: "load" } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{ job: "load" }]);
+
+		});
+
+		it("rewrites the client labels to the characters Vertex AI accepts", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({
+				...vertex,
+				labels: {
+					"trace": "/events/coimbra-university",
+					"Team": "Università Coimbra",
+					"/2nd-job": "load",
+					"/": "load",
+					"run": "/2026-11-23/"
+				}
+			}).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{
+				"trace": "events-coimbra-university",
+				"team": "universita-coimbra",
+				"nd-job": "load",
+				"run": "2026-11-23"
+			}]);
+
+		});
+
+		it("clips the client labels to 63 characters", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({ ...vertex, labels: { [`${"x".repeat(62)}/y`]: "y".repeat(100) } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{ ["x".repeat(62)]: "y".repeat(63) }]);
+
+		});
+
+		it("keeps the first 64 client labels", async () => {
+
+			const requests = stub();
+
+			const labels = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`k${index}`, "v"]));
+
+			await createGoogleAI({ ...vertex, labels }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(requests().map(({ config }) => Object.keys(config?.labels ?? {}))).toEqual([
+				Array.from({ length: 64 }, (_, index) => `k${index}`)
+			]);
+
+		});
+
+		it("rewrites the labels of the request within the Vertex AI limits", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({ ...vertex }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { labels: { Pipe: "/Events/Coimbra-University/", note: "n".repeat(100) } }
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{
+				pipe: "events-coimbra-university",
+				note: "n".repeat(63)
+			}]);
+
+		});
+
+		it("keeps the labels of the request ahead of the client ones within the 64 label limit", async () => {
+
+			const requests = stub();
+
+			const labels = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`k${index}`, "v"]));
+			const extra = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`r${index}`, "v"]));
+
+			await createGoogleAI({ ...vertex, labels }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { labels: extra }
+			});
+
+			expect(requests().map(({ config }) => Object.keys(config?.labels ?? {}))).toEqual([[
+				...Array.from({ length: 10 }, (_, index) => `r${index}`),
+				...Array.from({ length: 54 }, (_, index) => `k${index}`)
+			]]);
+
+		});
+
+		it("computes labels on each request", async () => {
+
+			const requests = stub();
+
+			const labels = vi.fn<() => Record<string, string>>()
+				.mockReturnValueOnce({ job: "one" })
+				.mockReturnValueOnce({ job: "two" });
+
+			const client = createGoogleAI({ ...vertex, labels });
+
+			await client.models.generateContent({ model: "gemini-3-flash", contents: "query" });
+			await client.models.generateContent({ model: "gemini-3-flash", contents: "query" });
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{ job: "one" }, { job: "two" }]);
+
+		});
+
+		it("lets the labels of the request win on shared keys", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({ ...vertex, labels: { job: "load", team: "data" } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { labels: { job: "probe" } }
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{ job: "probe", team: "data" }]);
+
+		});
+
+		it("attaches labels to every function calling turn", async () => {
+
+			const requests = stub({ turns: [{ parts: [call] }] });
+
+			await createGoogleAI({ ...vertex, labels: { job: "load" } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { tools: [tool] }
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([{ job: "load" }, { job: "load" }]);
+
+		});
+
+		it("attaches labels to streamed requests", async () => {
+
+			stream.mockImplementation(async () => (async function* () { yield generated({ parts: [prose] }); })());
+
+			const chunks = await createGoogleAI({ ...vertex, labels: { job: "load" } }).models.generateContentStream({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			await Array.fromAsync(chunks);
+
+			expect(stream.mock.calls.map(([{ config }]) => config?.labels)).toEqual([{ job: "load" }]);
+
+		});
+
+		it("leaves labels out of requests to the Gemini Developer API", async () => {
+
+			const requests = stub();
+
+			await createGoogleAI({ apiKey: "test", labels: { job: "load" } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(requests().map(({ config }) => config?.labels)).toEqual([undefined]);
+
+		});
+
+	});
+
+	describe("usage log", () => {
+
+		const sink = vi.fn<Sink>();
+
+		beforeEach(() => {
+			configureSync({
+				reset: true,
+				sinks: { sink },
+				loggers: [
+					{ category: ["/"], lowestLevel: "info", sinks: ["sink"] },
+					{ category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] }
+				]
+			});
+		});
+
+		afterEach(() => {
+			resetSync();
+			sink.mockReset();
+		});
+
+		/**
+		 * Lists the usage logged so far, one entry per request.
+		 */
+		function usages() {
+			return sink.mock.calls.map(([{ properties }]) => properties).filter(properties => "input" in properties);
+		}
+
+		it("logs the model, labels and token usage of a request, labels included on the Gemini Developer API", async () => {
+
+			stub({
+				turns: [{
+					parts: [prose],
+					usage: { promptTokenCount: 10, toolUsePromptTokenCount: 1, candidatesTokenCount: 2, thoughtsTokenCount: 3 }
+				}]
+			});
+
+			await createGoogleAI({ apiKey: "test", labels: { job: "load" } }).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect(usages()).toEqual([{
+				model: "gemini-3-flash",
+				labels: { job: "load" },
+				input: 11,
+				output: 5,
+				reasoning: 3
+			}]);
+
+		});
+
+		it("logs the labels merged with those of the request", async () => {
+
+			stub();
+
+			await createGoogleAI({
+				vertexai: true,
+				project: "test",
+				location: "us-central1",
+				labels: { job: "load", team: "data" }
+			}).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { labels: { job: "probe" } }
+			});
+
+			expect(usages()).toEqual([expect.objectContaining({ labels: { job: "probe", team: "data" } })]);
+
+		});
+
+		it("logs the labels as supplied, before normalisation", async () => {
+
+			stub();
+
+			await createGoogleAI({
+				vertexai: true,
+				project: "test",
+				location: "us-central1",
+				labels: { trace: "/events/coimbra-university" }
+			}).models.generateContent({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { labels: { Pipe: "/Events/Coimbra-University" } }
+			});
+
+			expect(usages()).toEqual([expect.objectContaining({
+				labels: { trace: "/events/coimbra-university", Pipe: "/Events/Coimbra-University" }
+			})]);
+
+		});
+
+		it("logs every function calling turn on its own", async () => {
+
+			stub({
+				turns: [
+					{ parts: [call], usage: { promptTokenCount: 10, candidatesTokenCount: 1 } },
+					{ parts: [prose], usage: { promptTokenCount: 20, candidatesTokenCount: 2 } }
+				]
+			});
+
+			await submit({ model: "gemini-3-flash", contents: "query", config: { tools: [tool] } });
+
+			expect(usages()).toEqual([
+				expect.objectContaining({ input: 10, output: 1 }),
+				expect.objectContaining({ input: 20, output: 2 })
+			]);
+
+		});
+
+		it("logs a streamed generation once it completes", async () => {
+
+			stream.mockImplementation(async () => (async function* () {
+				yield generated({ parts: [{ text: "pro" }], usage: { promptTokenCount: 10 } });
+				yield generated({ parts: [{ text: "se" }], usage: { promptTokenCount: 10, candidatesTokenCount: 2 } });
+			})());
+
+			const chunks = await createGoogleAI({ apiKey: "test" }).models.generateContentStream({
+				model: "gemini-3-flash",
+				contents: "query"
+			});
+
+			expect((await Array.fromAsync(chunks)).map(output)).toEqual(["pro", "se"]);
+
+			expect(usages()).toEqual([{ model: "gemini-3-flash", labels: {}, input: 10, output: 2, reasoning: 0 }]);
 
 		});
 

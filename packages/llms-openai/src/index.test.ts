@@ -16,7 +16,8 @@
 
 import * as sdk from "openai";
 import { type OpenAI, OpenAIError, RateLimitError, toFile } from "openai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { configureSync, resetSync, type Sink } from "@metreeca/tape";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as connectors from "./index.js";
 import { createOpenAI, embedding, json, text } from "./index.js";
 
@@ -51,6 +52,75 @@ function completion({
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 describe("createOpenAI", () => {
+
+	const usage = {
+		prompt_tokens: 10,
+		completion_tokens: 5,
+		total_tokens: 15,
+		completion_tokens_details: { reasoning_tokens: 3 }
+	};
+
+	/**
+	 * Creates a response of the Responses API.
+	 */
+	function answer() {
+		return {
+			id: "test",
+			object: "response",
+			created_at: 0,
+			model: "gpt-test",
+			status: "completed",
+			output: [],
+			usage: {
+				input_tokens: 10,
+				output_tokens: 5,
+				total_tokens: 15,
+				input_tokens_details: { cached_tokens: 0 },
+				output_tokens_details: { reasoning_tokens: 3 }
+			}
+		};
+	}
+
+	/**
+	 * Creates an embedding response.
+	 */
+	function embedded(): OpenAI.CreateEmbeddingResponse {
+		return {
+			object: "list",
+			model: "embedding-test",
+			usage: { prompt_tokens: 10, total_tokens: 10 },
+			data: [{ object: "embedding", index: 0, embedding: [1, 2] }]
+		};
+	}
+
+	/**
+	 * Creates a chat completion chunk carrying a content delta.
+	 */
+	function delta(content: string): OpenAI.ChatCompletionChunk {
+		return {
+			id: "test",
+			object: "chat.completion.chunk",
+			created: 0,
+			model: "gpt-test",
+			choices: [{ index: 0, delta: { content }, finish_reason: null }]
+		};
+	}
+
+	/**
+	 * Creates the chat completion chunk closing a stream that requested usage.
+	 */
+	function metered(): OpenAI.ChatCompletionChunk {
+		return { id: "test", object: "chat.completion.chunk", created: 0, model: "gpt-test", choices: [], usage };
+	}
+
+	/**
+	 * Creates a server-sent event stream carrying the given payloads.
+	 */
+	function events(...payloads: readonly unknown[]) {
+		return new Response([...payloads.map(payload => `data: ${JSON.stringify(payload)}\n\n`), "data: [DONE]\n\n"].join(""), {
+			headers: { "content-type": "text/event-stream" }
+		});
+	}
 
 	/**
 	 * Creates a transport answering the given responses in order, then a completion once they run out.
@@ -163,6 +233,357 @@ describe("createOpenAI", () => {
 
 			await expect(client(dispatch).models.list()).rejects.toThrow(RateLimitError);
 			expect(dispatch).toHaveBeenCalledTimes(1);
+
+		});
+
+	});
+
+	describe("labels", () => {
+
+		/**
+		 * Lists the payloads of the requests issued through the given transport.
+		 */
+		function payloads(dispatch: ReturnType<typeof transport>) {
+			return dispatch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+		}
+
+		it("attaches labels as metadata to stored chat completion requests", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels: { job: "load" } }).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				store: true
+			});
+
+			expect(payloads(dispatch)).toEqual([expect.objectContaining({ metadata: { job: "load" } })]);
+
+		});
+
+		it("leaves chat completion requests not stored as they stand", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels: { job: "load" } }).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }]
+			});
+
+			expect(payloads(dispatch)).toEqual([expect.not.objectContaining({ metadata: expect.anything() })]);
+
+		});
+
+		it("attaches labels as metadata to response requests", async () => {
+
+			const dispatch = transport(Response.json(answer()));
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels: { job: "load" } }).responses.create({
+				model: "gpt-test",
+				input: "query"
+			});
+
+			expect(payloads(dispatch)).toEqual([expect.objectContaining({ metadata: { job: "load" } })]);
+
+		});
+
+		it("computes labels on each request", async () => {
+
+			const dispatch = transport();
+
+			const labels = vi.fn<() => Record<string, string>>()
+				.mockReturnValueOnce({ job: "one" })
+				.mockReturnValueOnce({ job: "two" });
+
+			const openai = createOpenAI({ apiKey: "test", fetch: dispatch, labels });
+
+			await openai.chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				store: true
+			});
+
+			await openai.chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				store: true
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => metadata)).toEqual([{ job: "one" }, { job: "two" }]);
+
+		});
+
+		it("lets the metadata of the request win on shared keys", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({
+				apiKey: "test",
+				fetch: dispatch,
+				labels: { job: "load", team: "data" }
+			}).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				metadata: { job: "probe" },
+				store: true
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => metadata)).toEqual([{ job: "probe", team: "data" }]);
+
+		});
+
+		it("attaches client labels within the API limits as they stand", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({
+				apiKey: "test",
+				fetch: dispatch,
+				labels: { trace: "/events/coimbra-university" }
+			}).responses.create({
+				model: "gpt-test",
+				input: "query"
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => metadata)).toEqual([{ trace: "/events/coimbra-university" }]);
+
+		});
+
+		it("clips client label keys to 64 characters and values to 512", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({
+				apiKey: "test",
+				fetch: dispatch,
+				labels: { ["k".repeat(100)]: "v".repeat(1000) }
+			}).responses.create({
+				model: "gpt-test",
+				input: "query"
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => metadata)).toEqual([{ ["k".repeat(64)]: "v".repeat(512) }]);
+
+		});
+
+		it("keeps the first 16 client labels", async () => {
+
+			const dispatch = transport();
+
+			const labels = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`k${index}`, "v"]));
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels }).responses.create({
+				model: "gpt-test",
+				input: "query"
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => Object.keys(metadata))).toEqual([
+				Array.from({ length: 16 }, (_, index) => `k${index}`)
+			]);
+
+		});
+
+		it("clips the metadata of the request to the API limits", async () => {
+
+			const dispatch = transport();
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch }).responses.create({
+				model: "gpt-test",
+				input: "query",
+				metadata: { Pipe: "/Events/Coimbra-University", ["k".repeat(100)]: "v".repeat(1000) }
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => metadata)).toEqual([{
+				Pipe: "/Events/Coimbra-University",
+				["k".repeat(64)]: "v".repeat(512)
+			}]);
+
+		});
+
+		it("keeps the metadata of the request ahead of the client labels within the 16 entry limit", async () => {
+
+			const dispatch = transport();
+
+			const labels = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`k${index}`, "v"]));
+			const metadata = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`r${index}`, "v"]));
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels }).responses.create({
+				model: "gpt-test",
+				input: "query",
+				metadata
+			});
+
+			expect(payloads(dispatch).map(({ metadata }) => Object.keys(metadata))).toEqual([[
+				...Array.from({ length: 10 }, (_, index) => `r${index}`),
+				...Array.from({ length: 6 }, (_, index) => `k${index}`)
+			]]);
+
+		});
+
+		it("leaves requests to other endpoints without metadata", async () => {
+
+			const dispatch = transport(Response.json(embedded()));
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels: { job: "load" } }).embeddings.create({
+				model: "embedding-test",
+				input: "query"
+			});
+
+			expect(payloads(dispatch)).toEqual([expect.not.objectContaining({ metadata: expect.anything() })]);
+
+		});
+
+	});
+
+	describe("streamed usage", () => {
+
+		it("requests usage on a streamed chat completion, withholding the chunk carrying it", async () => {
+
+			const dispatch = transport(events(delta("pro"), delta("se"), metered()));
+
+			const chunks = await client(dispatch).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				stream: true
+			});
+
+			expect((await Array.fromAsync(chunks)).map(({ choices }) => choices[0]?.delta.content)).toEqual(["pro", "se"]);
+
+			expect(dispatch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).stream_options))
+				.toEqual([{ include_usage: true }]);
+
+		});
+
+		it("hands over the chunk carrying usage to a streamed chat completion requesting it", async () => {
+
+			const dispatch = transport(events(delta("prose"), metered()));
+
+			const chunks = await client(dispatch).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				stream: true,
+				stream_options: { include_usage: true }
+			});
+
+			expect((await Array.fromAsync(chunks)).map(({ usage }) => usage)).toEqual([undefined, usage]);
+
+		});
+
+	});
+
+	describe("usage log", () => {
+
+		const sink = vi.fn<Sink>();
+
+		beforeEach(() => {
+			configureSync({
+				reset: true,
+				sinks: { sink },
+				loggers: [
+					{ category: ["/"], lowestLevel: "info", sinks: ["sink"] },
+					{ category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] }
+				]
+			});
+		});
+
+		afterEach(() => {
+			resetSync();
+			sink.mockReset();
+		});
+
+		/**
+		 * Lists the usage logged so far, one entry per request.
+		 */
+		function usages() {
+			return sink.mock.calls.map(([{ properties }]) => properties).filter(properties => "input" in properties);
+		}
+
+		it("logs the model, labels and token usage of a chat completion", async () => {
+
+			const dispatch = transport(Response.json({ ...completion(), usage }));
+
+			await createOpenAI({ apiKey: "test", fetch: dispatch, labels: { job: "load" } }).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				metadata: { team: "data" }
+			});
+
+			expect(usages()).toEqual([{
+				model: "gpt-test",
+				labels: { job: "load", team: "data" },
+				input: 10,
+				output: 5,
+				reasoning: 3
+			}]);
+
+		});
+
+		it("logs the labels as supplied, before normalisation", async () => {
+
+			const dispatch = transport(Response.json({ ...completion(), usage }));
+
+			await createOpenAI({
+				apiKey: "test",
+				fetch: dispatch,
+				labels: { ["k".repeat(100)]: "/events/coimbra-university" }
+			}).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				metadata: { Pipe: "v".repeat(1000) },
+				store: true
+			});
+
+			expect(usages()).toEqual([expect.objectContaining({
+				labels: { ["k".repeat(100)]: "/events/coimbra-university", Pipe: "v".repeat(1000) }
+			})]);
+
+		});
+
+		it("logs the token usage of a response", async () => {
+
+			const dispatch = transport(Response.json(answer()));
+
+			await client(dispatch).responses.create({ model: "gpt-test", input: "query" });
+
+			expect(usages()).toEqual([{ model: "gpt-test", labels: {}, input: 10, output: 5, reasoning: 3 }]);
+
+		});
+
+		it("logs the token usage of an embedding", async () => {
+
+			const dispatch = transport(Response.json(embedded()));
+
+			await client(dispatch).embeddings.create({ model: "embedding-test", input: "query" });
+
+			expect(usages()).toEqual([{ model: "embedding-test", labels: {}, input: 10, output: 0, reasoning: 0 }]);
+
+		});
+
+		it("logs the token usage of a streamed chat completion", async () => {
+
+			const dispatch = transport(events(delta("prose"), metered()));
+
+			await Array.fromAsync(await client(dispatch).chat.completions.create({
+				model: "gpt-test",
+				messages: [{ role: "user", content: "query" }],
+				stream: true
+			}));
+
+			expect(usages()).toEqual([{ model: "gpt-test", labels: {}, input: 10, output: 5, reasoning: 3 }]);
+
+		});
+
+		it("logs the token usage of a streamed response", async () => {
+
+			const dispatch = transport(events({ type: "response.completed", sequence_number: 0, response: answer() }));
+
+			await Array.fromAsync(await client(dispatch).responses.create({
+				model: "gpt-test",
+				input: "query",
+				stream: true
+			}));
+
+			expect(usages()).toEqual([{ model: "gpt-test", labels: {}, input: 10, output: 5, reasoning: 3 }]);
 
 		});
 
