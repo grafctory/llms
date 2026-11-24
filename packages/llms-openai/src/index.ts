@@ -31,12 +31,12 @@
  * @see {@link https://github.com/openai/openai-node OpenAI Node API Library}
  */
 
-import { charge, type Labels } from "@metreeca/llms/usage";
-import { createQuota } from "@metreeca/llms/quotas";
-import type { Vector } from "@metreeca/llms/vectors";
-import { eager, error, isObject, isString, type Lazy, memo, type Optional, type Value } from "@metreeca/core";
-import { TooManyRequests } from "@metreeca/http";
-import { report } from "@metreeca/tape";
+import { charge, type Labels } from "@grafctory/llms/usage";
+import { createQuota } from "@grafctory/llms/quotas";
+import type { Vector } from "@grafctory/llms/vectors";
+import { eager, error, isObject, isString, type Lazy, memo, type Optional, type Value } from "@grafctory/core";
+import { TooManyRequests } from "@grafctory/http";
+import { report } from "@grafctory/tape";
 import { type ClientOptions, OpenAI } from "openai";
 
 export * from "openai";

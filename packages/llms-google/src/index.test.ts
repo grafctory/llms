@@ -33,7 +33,7 @@ import {
 	TrafficType,
 	Type
 } from "@google/genai";
-import { configureSync, resetSync, type Sink } from "@metreeca/tape";
+import { configureSync, resetSync, type Sink } from "@grafctory/tape";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 
@@ -75,9 +75,9 @@ vi.mock("@google/genai", async importOriginal => {
  */
 const limits = vi.hoisted(() => vi.fn<(model: string, limit: number) => void>());
 
-vi.mock("@metreeca/llms/quotas", async importOriginal => {
+vi.mock("@grafctory/llms/quotas", async importOriginal => {
 
-	const actual = await importOriginal<typeof import("@metreeca/llms/quotas")>();
+	const actual = await importOriginal<typeof import("@grafctory/llms/quotas")>();
 
 	return {
 

@@ -1,7 +1,7 @@
 {
-  "name": "@metreeca/llms-google",
+  "name": "@grafctory/llms-google",
   "version": "0.5.0",
-  "description": "Google model connectors for @metreeca/llms.",
+  "description": "Google model connectors for @grafctory/llms.",
   "keywords": [
     "typescript",
     "pipeline",
@@ -9,9 +9,9 @@
     "llm",
     "gemini"
   ],
-  "homepage": "https://metreeca.github.io/llms/",
+  "homepage": "https://grafctory.github.io/llms/",
   "bugs": {
-    "url": "https://github.com/metreeca/llms/issues",
+    "url": "https://github.com/grafctory/llms/issues",
     "email": "info@metreeca.com"
   },
   "license": "Apache-2.0",
@@ -22,14 +22,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/metreeca/llms.git",
+    "url": "git+https://github.com/grafctory/llms.git",
     "directory": "packages/llms-google"
   },
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": {
-      "@metreeca/source": "./src/index.ts",
+      "@grafctory/source": "./src/index.ts",
       "default": "./dist/index.js"
     }
   },
@@ -48,10 +48,10 @@
   },
   "dependencies": {
     "@google/genai": "~2.30.0",
-    "@metreeca/core": "^0.14.2",
-    "@metreeca/http": "^0.6.1",
-    "@metreeca/llms": "^0.5.0",
-    "@metreeca/tape": "^0.13.1"
+    "@grafctory/core": "^0.14.2",
+    "@grafctory/http": "^0.6.1",
+    "@grafctory/llms": "^0.5.0",
+    "@grafctory/tape": "^0.13.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

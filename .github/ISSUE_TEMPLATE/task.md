@@ -1,7 +1,7 @@
 ---
 name: "Task"
 about: "Track a piece of work to be done"
-title: "What needs to be done on @metreeca/llms?"
+title: "What needs to be done on @grafctory/llms?"
 type: "Task"
 ---
 

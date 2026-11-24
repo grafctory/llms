@@ -24,7 +24,7 @@
  * @module
  */
 
-import { log } from "@metreeca/tape";
+import { log } from "@grafctory/tape";
 
 
 /**

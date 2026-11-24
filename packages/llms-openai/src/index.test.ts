@@ -16,7 +16,7 @@
 
 import * as sdk from "openai";
 import { type OpenAI, OpenAIError, RateLimitError, toFile } from "openai";
-import { configureSync, resetSync, type Sink } from "@metreeca/tape";
+import { configureSync, resetSync, type Sink } from "@grafctory/tape";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as connectors from "./index.js";
 import { createOpenAI, embedding, json, text } from "./index.js";
@@ -27,9 +27,9 @@ import { createOpenAI, embedding, json, text } from "./index.js";
  */
 const limits = vi.hoisted(() => vi.fn<(model: string, limit: number) => void>());
 
-vi.mock("@metreeca/llms/quotas", async importOriginal => {
+vi.mock("@grafctory/llms/quotas", async importOriginal => {
 
-	const actual = await importOriginal<typeof import("@metreeca/llms/quotas")>();
+	const actual = await importOriginal<typeof import("@grafctory/llms/quotas")>();
 
 	return {
 

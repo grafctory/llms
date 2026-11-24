@@ -44,12 +44,12 @@ import {
 	ModalityTokenCount,
 	Part
 } from "@google/genai";
-import { eager, error, isArray, isObject, isString, type Lazy, memo, type Optional, type Value } from "@metreeca/core";
-import { TooManyRequests } from "@metreeca/http";
-import { createQuota } from "@metreeca/llms/quotas";
-import { charge, type Labels } from "@metreeca/llms/usage";
-import type { Vector } from "@metreeca/llms/vectors";
-import { report } from "@metreeca/tape";
+import { eager, error, isArray, isObject, isString, type Lazy, memo, type Optional, type Value } from "@grafctory/core";
+import { TooManyRequests } from "@grafctory/http";
+import { createQuota } from "@grafctory/llms/quotas";
+import { charge, type Labels } from "@grafctory/llms/usage";
+import type { Vector } from "@grafctory/llms/vectors";
+import { report } from "@grafctory/tape";
 
 
 export * from "@google/genai";

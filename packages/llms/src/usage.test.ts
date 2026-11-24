@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { configureSync, resetSync, type Sink } from "@metreeca/tape";
+import { configureSync, resetSync, type Sink } from "@grafctory/tape";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { charge } from "./usage.js";
 

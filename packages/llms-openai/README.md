@@ -1,8 +1,8 @@
-# @metreeca/llms-openai
+# @grafctory/llms-openai
 
-[![npm](https://img.shields.io/npm/v/@metreeca/llms-openai)](https://www.npmjs.com/package/@metreeca/llms-openai)
+[![npm](https://img.shields.io/npm/v/@grafctory/llms-openai)](https://www.npmjs.com/package/@grafctory/llms-openai)
 
-OpenAI model connectors for [@metreeca/llms](https://github.com/metreeca/llms).
+OpenAI model connectors for [@grafctory/llms](https://github.com/grafctory/llms).
 
 Connects AI jobs to OpenAI models, ready to work alongside any other task in a pipeline. Long runs proceed reliably to
 completion, and every result a job receives from a model can be trusted as complete. The cost of each request is logged
@@ -11,9 +11,9 @@ under the labels of the job issuing it, so any spike can be traced back to its s
 # Installation
 
 ```shell
-npm install @metreeca/gear         # the job executor
-npm install @metreeca/llms         # AI tasks and shared services
-npm install @metreeca/llms-openai  # this package
+npm install @grafctory/gear         # the job executor
+npm install @grafctory/llms         # AI tasks and shared services
+npm install @grafctory/llms-openai  # this package
 ```
 
 > [!IMPORTANT]
@@ -33,14 +33,14 @@ npm install @metreeca/llms-openai  # this package
 
 # Usage
 
-See the [API reference](https://metreeca.github.io/llms/modules/_metreeca_llms-openai.html).
+See the [API reference](https://grafctory.github.io/llms/modules/_grafctory_llms-openai.html).
 
 # Support
 
-- open an [issue](https://github.com/metreeca/llms/issues) to report a problem or to suggest a new feature
-- start a [discussion](https://github.com/metreeca/llms/discussions) to ask a how-to question or to share an idea
+- open an [issue](https://github.com/grafctory/llms/issues) to report a problem or to suggest a new feature
+- start a [discussion](https://github.com/grafctory/llms/discussions) to ask a how-to question or to share an idea
 
 # License
 
 This project is licensed under the Apache 2.0 License –
-see [LICENSE](https://github.com/metreeca/llms?tab=Apache-2.0-1-ov-file) file for details.
+see [LICENSE](https://github.com/grafctory/llms?tab=Apache-2.0-1-ov-file) file for details.

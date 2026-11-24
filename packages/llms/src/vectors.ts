@@ -23,8 +23,8 @@
  * @module
  */
 
-import { some, type Some } from "@metreeca/core/arrays";
-import type { Text } from "@metreeca/core/strings";
+import { some, type Some } from "@grafctory/core/arrays";
+import type { Text } from "@grafctory/core/strings";
 
 
 /**

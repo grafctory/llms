@@ -24,9 +24,9 @@
  * @module
  */
 
-import { assert, type Optional } from "@metreeca/core";
-import { createThrottle, type Throttle } from "@metreeca/core/async";
-import { log } from "@metreeca/tape";
+import { assert, type Optional } from "@grafctory/core";
+import { createThrottle, type Throttle } from "@grafctory/core/async";
+import { log } from "@grafctory/tape";
 
 
 /**

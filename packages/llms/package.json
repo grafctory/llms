@@ -1,16 +1,16 @@
 {
-  "name": "@metreeca/llms",
+  "name": "@grafctory/llms",
   "version": "0.5.0",
-  "description": "AI tasks and shared services for @metreeca/llms.",
+  "description": "AI tasks and shared services for @grafctory/llms.",
   "keywords": [
     "typescript",
     "pipeline",
     "ai",
     "llm"
   ],
-  "homepage": "https://metreeca.github.io/llms/",
+  "homepage": "https://grafctory.github.io/llms/",
   "bugs": {
-    "url": "https://github.com/metreeca/llms/issues",
+    "url": "https://github.com/grafctory/llms/issues",
     "email": "info@metreeca.com"
   },
   "license": "Apache-2.0",
@@ -21,22 +21,22 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/metreeca/llms.git",
+    "url": "git+https://github.com/grafctory/llms.git",
     "directory": "packages/llms"
   },
   "type": "module",
   "sideEffects": false,
   "exports": {
     "./vectors": {
-      "@metreeca/source": "./src/vectors.ts",
+      "@grafctory/source": "./src/vectors.ts",
       "default": "./dist/vectors.js"
     },
     "./quotas": {
-      "@metreeca/source": "./src/quotas.ts",
+      "@grafctory/source": "./src/quotas.ts",
       "default": "./dist/quotas.js"
     },
     "./usage": {
-      "@metreeca/source": "./src/usage.ts",
+      "@grafctory/source": "./src/usage.ts",
       "default": "./dist/usage.js"
     }
   },
@@ -54,8 +54,8 @@
     "check": "npx vitest --typecheck run"
   },
   "dependencies": {
-    "@metreeca/core": "^0.14.2",
-    "@metreeca/tape": "^0.13.1"
+    "@grafctory/core": "^0.14.2",
+    "@grafctory/tape": "^0.13.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

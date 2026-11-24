@@ -1,10 +1,10 @@
-# @metreeca/llms
+# @grafctory/llms
 
 Ready-made tasks and shared services for AI jobs.
 
-**@metreeca/llms** provides ready-made [@metreeca/flow](https://github.com/metreeca/flow) tasks for putting language
+**@grafctory/llms** provides ready-made [@grafctory/flow](https://github.com/grafctory/flow) tasks for putting language
 models to work in a pipeline: prompting a model, extracting structured records from free text, and embedding content for
-semantic retrieval. The tasks run under the [@metreeca/gear](https://github.com/metreeca/gear) job executor, which
+semantic retrieval. The tasks run under the [@grafctory/gear](https://github.com/grafctory/gear) job executor, which
 supplies the shared services they draw on, including the clients of the model providers they reach.
 
 - **Ready-Made Tasks**: prompting, extraction and embedding, chaining alongside any other task
@@ -20,9 +20,9 @@ supplies the shared services they draw on, including the clients of the model pr
 # Installation
 
 ```shell
-npm install @metreeca/gear             # job executor and shared services
-npm install @metreeca/llms             # AI tasks and shared services
-npm install @metreeca/llms-<provider>  # model connectors, one package per provider
+npm install @grafctory/gear             # job executor and shared services
+npm install @grafctory/llms             # AI tasks and shared services
+npm install @grafctory/llms-<provider>  # model connectors, one package per provider
 ```
 
 > [!WARNING]
@@ -32,34 +32,34 @@ npm install @metreeca/llms-<provider>  # model connectors, one package per provi
 
 Install the core package, then add a connector package for each model provider the pipeline reaches. Each connector
 package pulls in only the SDK its own provider needs and re-exports it in full, so pipelines import SDK values and
-types from the connector and never install the SDK themselves. The [@metreeca/gear](https://github.com/metreeca/gear)
+types from the connector and never install the SDK themselves. The [@grafctory/gear](https://github.com/grafctory/gear)
 job executor ships separately: install it directly to set up and run the jobs putting tasks and connectors to work.
 
 | Package                 | Description                  |
 |-------------------------|------------------------------|
-| [@metreeca/llms]        | AI tasks and shared services |
-| [@metreeca/llms-google] | Google model connectors      |
-| [@metreeca/llms-openai] | OpenAI model connectors      |
+| [@grafctory/llms]        | AI tasks and shared services |
+| [@grafctory/llms-google] | Google model connectors      |
+| [@grafctory/llms-openai] | OpenAI model connectors      |
 
-[@metreeca/llms]: https://metreeca.github.io/llms/modules/_metreeca_llms.html
+[@grafctory/llms]: https://grafctory.github.io/llms/modules/_grafctory_llms.html
 
-[@metreeca/llms-google]: https://metreeca.github.io/llms/modules/_metreeca_llms-google.html
+[@grafctory/llms-google]: https://grafctory.github.io/llms/modules/_grafctory_llms-google.html
 
-[@metreeca/llms-openai]: https://metreeca.github.io/llms/modules/_metreeca_llms-openai.html
+[@grafctory/llms-openai]: https://grafctory.github.io/llms/modules/_grafctory_llms-openai.html
 
 # Usage
 
 > [!NOTE]
 >
 > Each package documents its own API in its README and API reference; for complete coverage, see the
-> [API reference](https://metreeca.github.io/llms/).
+> [API reference](https://grafctory.github.io/llms/).
 
 # Support
 
-- open an [issue](https://github.com/metreeca/llms/issues) to report a problem or to suggest a new feature
-- start a [discussion](https://github.com/metreeca/llms/discussions) to ask a how-to question or to share an idea
+- open an [issue](https://github.com/grafctory/llms/issues) to report a problem or to suggest a new feature
+- start a [discussion](https://github.com/grafctory/llms/discussions) to ask a how-to question or to share an idea
 
 # License
 
 This project is licensed under the Apache 2.0 License –
-see [LICENSE](https://github.com/metreeca/llms?tab=Apache-2.0-1-ov-file) file for details.
+see [LICENSE](https://github.com/grafctory/llms?tab=Apache-2.0-1-ov-file) file for details.
