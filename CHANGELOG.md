@@ -21,6 +21,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#8](https://github.com/metreeca/llms/issues/8)), so concurrent jobs drawing on the same model are paced together
   and every request logs its token usage under the labels of the source it is charged to
 
+- `createGoogleAI` and `createOpenAI` pace each model at the request limit the provider advertises for it
+  ([#9](https://github.com/metreeca/llms/issues/9)), rather than probing the limit through rejections, so a run
+  reaches the full rate its quota allows without being held back by a fixed floor or slowed by repeated rejections
+
 ### Changed
 
 - **Breaking**: `@metreeca/llms` — the root entry point is replaced by the `vectors`, `quotas` and `usage` entry points,

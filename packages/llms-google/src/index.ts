@@ -30,9 +30,6 @@
  * @see {@link https://googleapis.github.io/js-genai/release_docs/index.html Google GenAI SDK}
  */
 
-import { charge, type Labels } from "@metreeca/llms/usage";
-import { createQuota } from "@metreeca/llms/quotas";
-import type { Vector } from "@metreeca/llms/vectors";
 import {
 	ApiError,
 	CallableTool,
@@ -47,9 +44,13 @@ import {
 	ModalityTokenCount,
 	Part
 } from "@google/genai";
-import { eager, error, isString, type Lazy, memo, type Value } from "@metreeca/core";
+import { eager, error, isArray, isObject, isString, type Lazy, memo, type Optional, type Value } from "@metreeca/core";
 import { TooManyRequests } from "@metreeca/http";
+import { createQuota } from "@metreeca/llms/quotas";
+import { charge, type Labels } from "@metreeca/llms/usage";
+import type { Vector } from "@metreeca/llms/vectors";
 import { report } from "@metreeca/tape";
+
 
 export * from "@google/genai";
 
@@ -66,7 +67,7 @@ export * from "@google/genai";
  * @param options The client options, as accepted by the {@link GoogleGenAI} constructor; if omitted, the SDK defaults
  *                apply, reading the API key for the Gemini API from the environment. Vertex AI is reached instead by
  *                setting `vertexai`, `project` and `location`, with Google Cloud project credentials. Unless
- *                `httpOptions.retryOptions` is set, a request failing transiently is retried as the SDK does by default
+ *                `httpOptions.retryOptions` is set, transient failures are retried with the default SDK retry options
  * @param options.labels The labels identifying the cost source of the requests the client issues, either fixed or
  *                       computed on each request, so that they can name the job issuing it from the context it runs
  *                       in; merged with the `config.labels` of the request, which win on shared keys
@@ -84,8 +85,10 @@ export * from "@google/genai";
  *
  * - **Quota control**: every request is paced against a per-model adaptive throttle. A request rejected over the rate
  *   quota is resumed after the `RetryInfo` delay the API advertises, so a long run keeps within the quota instead of
- *   failing on 429 errors. Other transient failures, such as an overloaded model, are retried as stated by `options`,
- *   so a run survives a spike in demand on the model rather than aborting on the first one.
+ *   failing on 429 errors. The API states the request limit of a model only when rejecting a request over it, so a
+ *   model runs as fast as the throttle finds feasible until its first rejection over requests per minute, and is then
+ *   held to the limit that rejection states. Other transient failures, such as an overloaded model, are retried as
+ *   stated by `options`, so a run survives a spike in demand on the model rather than aborting on the first one.
  *
  * - **Function calling**: when a request declares `tools`, the client resolves function calls itself, issuing one
  *   throttled request per turn. Turns are unlimited unless `automaticFunctionCalling.maximumRemoteCalls` bounds them,
@@ -162,147 +165,148 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 			generateContent: (generateContent =>
 
-				async (...[{ config, ...params }, ...rest]: Parameters<typeof generateContent>) => {
+					async (...[{ config, ...params }, ...rest]: Parameters<typeof generateContent>) => {
 
-					return config?.tools
-						? await execute()
-						: await generate({ ...params, config });
+						return config?.tools
+							? await execute()
+							: await generate({ ...params, config });
 
-
-					/**
-					 * Submits a single labelled model request under the throttle of the target model, logging its usage.
-					 *
-					 * @param request The request to submit
-					 *
-					 * @returns The model response to `request`
-					 *
-					 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
-					 */
-					async function generate(request: GenerateContentParameters) {
-
-						const [tags, $request] = labelled(request);
-
-						const response = await quotas(request.model)(() => generateContent($request, ...rest), quota);
-
-						record(request.model, tags, response.usageMetadata);
-
-						return response;
-
-					}
-
-
-					/**
-					 * Resolves a request carrying tools, driving function calling under quota throttling.
-					 *
-					 * The SDK resolves function calls through an internal loop that neither throttles its requests
-					 * nor recovers from quota exhaustion, so long tool sessions fail with unexpected 429 errors:
-					 * function declarations count towards the token limit, every turn issues a further request, and
-					 * tools such as Browser MCP or Google Search resubmit massive contexts on each one of them, as
-					 * reported for other SDKs:
-					 *
-					 * - googleapis/python-genai#17: 429 errors with the Google Search tool
-					 * - google/adk-python#1057: 1.5M tokens in ~20 requests with Browser MCP, which sends the
-					 *   entire DOM as context
-					 *
-					 * Turns are driven by {@link afc} instead, one throttled request at a time (see {@link request}),
-					 * and a requested response schema is submitted with every one of them. Requests that disable
-					 * automatic function calling take the same throttled route, but are submitted once and handed
-					 * over as they come, function calls included, leaving the caller to resolve them.
-					 *
-					 * @returns The final response of the function calling loop, or the single response to a request
-					 *          that disables it
-					 *
-					 * @throws {@link !Error Error} If the function calling loop cannot be completed (see {@link afc})
-					 */
-					async function execute(): Promise<GenerateContentResponse> {
-
-						const {
-							automaticFunctionCalling: {
-								disable = false,
-								maximumRemoteCalls = 0
-							} = {}
-						} = config ?? {};
-
-						return disable
-							? await request(params.contents)
-							: await afc();
 
 						/**
-						 * Drives the function calling loop until the model returns a final response.
+						 * Submits a single labelled model request under the quota of the target model, logging usage.
 						 *
-						 * Normalises the request contents into a conversation history, then alternates throttled
-						 * model requests (see {@link request}) with tool dispatch: the function calls requested by the
-						 * model are submitted to every `CallableTool` declared in the request and the resulting
-						 * parts are appended to the history for the next turn, until a response reports no call.
+						 * @param request The request to submit
 						 *
-						 * @returns The final model response, with the conversation history attached as
-						 *          `automaticFunctionCallingHistory` and the usage of every turn as `usageMetadata`
+						 * @returns The model response to `request`
 						 *
-						 * @throws {@link !Error Error} If a response carries no model content, if a function is
-						 *         requested while no callable tool is declared, or if `maximumRemoteCalls` turns
-						 *         are exhausted without a final response
+						 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
 						 */
-						async function afc() {
+						async function generate(request: GenerateContentParameters) {
 
-							const callables = config?.tools?.filter((tool): tool is CallableTool =>
-								typeof tool === "object" && tool !== null && "callTool" in tool
-								&& typeof tool.callTool === "function"
-							) ?? [];
+							const [tags, $request] = labelled(request);
 
-							return await converse((Array.isArray(params.contents)
-									? params.contents
-									: [params.contents]
-							).map(content =>
-								isString(content) ? { role: "user", parts: [{ text: content }] }
-									: "role" in content && "parts" in content ? content
-										: { role: "user", parts: [content as Part] }
-							), undefined, 0);
+							const response = await paced(request.model, () => generateContent($request, ...rest));
+
+							record(request.model, tags, response.usageMetadata);
+
+							return response;
+
+						}
 
 
-							async function converse(
-								history: Content[],
-								usage: undefined | GenerateContentResponseUsageMetadata,
-								turn: number
-							): Promise<GenerateContentResponse> {
+						/**
+						 * Resolves a request carrying tools, driving function calling under quota throttling.
+						 *
+						 * The SDK resolves function calls through an internal loop that neither throttles its requests
+						 * nor recovers from quota exhaustion, so long tool sessions fail with unexpected 429 errors:
+						 * function declarations count towards the token limit, every turn issues a further request, and
+						 * tools such as Browser MCP or Google Search resubmit massive contexts on each one of them.
+						 *
+						 * The same failures are reported against other SDKs:
+						 *
+						 * - googleapis/python-genai#17: 429 errors with the Google Search tool
+						 * - google/adk-python#1057: 1.5M tokens in ~20 requests with Browser MCP, which sends the
+						 *   entire DOM as context
+						 *
+						 * Turns are driven by {@link afc} instead, one throttled request at a time (see
+						 * {@link request}), and a requested response schema is submitted with every one of them.
+						 * Requests that disable automatic function calling take the same throttled route, but are
+						 * submitted once and returned as they come, function calls included, for the caller to resolve.
+						 *
+						 * @returns The final response of the loop, or the single response to a request disabling it
+						 *
+						 * @throws {@link !Error Error} If the function calling loop fails (see {@link afc})
+						 */
+						async function execute(): Promise<GenerateContentResponse> {
 
-								if ( maximumRemoteCalls !== 0 && turn >= maximumRemoteCalls ) {
+							const {
+								automaticFunctionCalling: {
+									disable = false,
+									maximumRemoteCalls = 0
+								} = {}
+							} = config ?? {};
 
-									throw new Error(`maximum turns (${maximumRemoteCalls}) reached without completion`);
+							return disable
+								? await request(params.contents)
+								: await afc();
 
-								} else {
+							/**
+							 * Drives the function calling loop until the model returns a final response.
+							 *
+							 * Throttled model requests (see {@link request}) alternate with tool dispatch: the function
+							 * calls requested by the model go to every `CallableTool` declared in the request, and
+							 * their results feed the next turn, until a response requests no further call.
+							 *
+							 * @returns The final model response, with the conversation history attached as
+							 *          `automaticFunctionCallingHistory` and the usage of every turn as `usageMetadata`
+							 *
+							 * @throws {@link !Error Error} If a response carries no model content, if a function is
+							 *         requested while no callable tool is declared, or if `maximumRemoteCalls` turns
+							 *         are exhausted without a final response
+							 */
+							async function afc() {
 
-									const response = await request(history);
+								const callables = config?.tools?.filter((tool): tool is CallableTool =>
+									typeof tool === "object" && tool !== null && "callTool" in tool
+									&& typeof tool.callTool === "function"
+								) ?? [];
 
-									const content = response.candidates?.[0]?.content;
-									const calls = (content?.parts ?? [])
-										.map(part => part.functionCall)
-										.filter(call => call !== undefined);
+								return await converse((Array.isArray(params.contents)
+										? params.contents
+										: [params.contents]
+								).map(content =>
+									isString(content) ? { role: "user", parts: [{ text: content }] }
+										: "role" in content && "parts" in content ? content
+											: { role: "user", parts: [content as Part] }
+								), undefined, 0);
 
-									const $usage = combine(usage, response.usageMetadata);
 
-									if ( !content ) {
+								async function converse(
+									history: Content[],
+									usage: undefined | GenerateContentResponseUsageMetadata,
+									turn: number
+								): Promise<GenerateContentResponse> {
 
-										throw new Error("no model content in response");
+									if ( maximumRemoteCalls !== 0 && turn >= maximumRemoteCalls ) {
 
-									} else if ( calls.length === 0 ) {
-
-										return Object.assign(response, {
-											automaticFunctionCallingHistory: history,
-											usageMetadata: $usage
-										});
-
-									} else if ( callables.length === 0 ) {
-
-										throw new Error(`no callable tools available to fulfill model requests <${
-											calls.map(call => call.name).join(", ")
-										}>`);
+										throw new Error(`maximum turns (${maximumRemoteCalls}) reached without completion`);
 
 									} else {
 
-										return await converse([...history, content, {
-											role: "user",
-											parts: (await Promise.all(callables.map(tool => tool.callTool(calls)))).flat()
-										}], $usage, turn+1);
+										const response = await request(history);
+
+										const content = response.candidates?.[0]?.content;
+										const calls = (content?.parts ?? [])
+											.map(part => part.functionCall)
+											.filter(call => call !== undefined);
+
+										const $usage = combine(usage, response.usageMetadata);
+
+										if ( !content ) {
+
+											throw new Error("no model content in response");
+
+										} else if ( calls.length === 0 ) {
+
+											return Object.assign(response, {
+												automaticFunctionCallingHistory: history,
+												usageMetadata: $usage
+											});
+
+										} else if ( callables.length === 0 ) {
+
+											throw new Error(`no callable tools available to fulfill model requests <${
+												calls.map(call => call.name).join(", ")
+											}>`);
+
+										} else {
+
+											return await converse([...history, content, {
+												role: "user",
+												parts: (await Promise.all(callables.map(tool => tool.callTool(calls)))).flat()
+											}], $usage, turn+1);
+
+										}
 
 									}
 
@@ -310,45 +314,43 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 							}
 
-						}
+							/**
+							 * Submits a single model request under the throttle of the target model.
+							 *
+							 * Every request carrying tools is submitted here, with the SDK function calling loop always
+							 * disabled, so each call performs exactly one request and turn management stays with
+							 * {@link afc}. A 429 rejection is retried after the delay advertised by the API.
+							 *
+							 * @param contents The conversation to submit
+							 *
+							 * @returns The model response to `contents`
+							 *
+							 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
+							 */
+							async function request(contents: ContentListUnion) {
 
-						/**
-						 * Submits a single model request under the throttle of the target model.
-						 *
-						 * Every request carrying tools is submitted here, with the SDK function calling loop always
-						 * disabled, so each call performs exactly one request and turn management stays with
-						 * {@link afc}. A 429 rejection is retried after the delay advertised by the API.
-						 *
-						 * @param contents The conversation to submit
-						 *
-						 * @returns The model response to `contents`
-						 *
-						 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
-						 */
-						async function request(contents: ContentListUnion) {
+								return await generate({
+									...params,
+									contents,
 
-							return await generate({
-								...params,
-								contents,
+									config: {
 
-								config: {
+										...config,
 
-									...config,
+										// disable the SDK loop: it would resolve function calls without throttling,
+										// leaving this loop with nothing but the final response
 
-									// disable the SDK loop: it would resolve function calls without throttling,
-									// leaving this loop with nothing but the final response
+										automaticFunctionCalling: { disable: true }
 
-									automaticFunctionCalling: { disable: true }
+									}
 
-								}
+								});
 
-							});
+							}
 
 						}
 
 					}
-
-				}
 
 			)(ai.models.generateContent.bind(ai.models)),
 
@@ -358,7 +360,7 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 						const [tags, $params] = labelled(params);
 
-						const chunks = await quotas(params.model)(() => generateContentStream($params), quota);
+						const chunks = await paced(params.model, () => generateContentStream($params));
 
 						return relay(params.model, tags, chunks);
 
@@ -379,6 +381,34 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 
 	/**
+	 * Submits a request under the quota of the model it targets.
+	 *
+	 * A rejection over the rate quota holds the model to the request limit it states, if any, from the next request on.
+	 *
+	 * @typeParam V The type of the value the request resolves to
+	 *
+	 * @param model The model the request targets
+	 * @param request The request to submit, issued anew on every attempt
+	 *
+	 * @returns The value `request` resolves to, resumed as many times as the rate quota requires
+	 *
+	 * @throws {ApiError} If the request fails for a reason the throttle cannot recover from
+	 */
+	function paced<V>(model: string, request: () => Promise<V>): Promise<V> {
+
+		const pace = quotas(model);
+
+		return pace.submit(request, error => {
+
+			pace.limit(advertised(error));
+
+			return quota(error);
+
+		});
+
+	}
+
+	/**
 	 * States the delay a request rejected over the rate quota is to be retried after.
 	 *
 	 * @param error The rejection to recover from
@@ -390,21 +420,60 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 	 */
 	function quota(error: unknown): undefined | number {
 
+		const delay = details(error)
+			.find(detail => `${detail["@type"]}`.includes("RetryInfo"))
+			?.["retryDelay"];
+
+		const match = `${delay}`.match(/^(\d+(?:\.\d+)?)s$/);
+
+		return match ? Math.ceil(parseFloat(match[1])*1000) : undefined;
+
+	}
+
+	/**
+	 * States the request limit a rejection over the rate quota advertises for its model.
+	 *
+	 * @param error The rejection to inspect
+	 *
+	 * @returns The requests per minute stated by a `QuotaFailure` violation of a per-minute request quota, if `error`
+	 *          reports one; undefined otherwise, as the limits of token and daily quotas have no bearing on the pace
+	 *
+	 * @see {@link https://ai.google.dev/gemini-api/docs/rate-limits Rate limits}
+	 */
+	function advertised(error: unknown): Optional<number> {
+
+		const violations = details(error)
+			.find(detail => `${detail["@type"]}`.includes("QuotaFailure"))
+			?.["violations"];
+
+		const limit = Number((isArray(violations) ? violations : [])
+			.filter(violation => isObject(violation))
+			.find(violation => `${violation["quotaId"]}`.includes("RequestsPerMinute"))
+			?.["quotaValue"]
+		);
+
+		return Number.isFinite(limit) && limit > 0 ? limit : undefined;
+
+	}
+
+	/**
+	 * Retrieves the details of a rejection over the rate quota.
+	 *
+	 * @param error The rejection to inspect
+	 *
+	 * @returns The details of `error`, if it reports an exhausted quota; an empty list otherwise
+	 */
+	function details(error: unknown): readonly Record<string, unknown>[] {
+
 		if ( error instanceof ApiError && error.status === TooManyRequests ) {
 
-			const delay = (error as ApiError & { // ;(cast) the SDK error type carries no quota details
+			return (error as ApiError & { // ;(cast) the SDK error type carries no quota details
 				error?: { details?: readonly Record<string, unknown>[] }
-			}).error?.details
-				?.find(detail => `${detail["@type"]}`.includes("RetryInfo"))
-				?.["retryDelay"];
-
-			const match = `${delay}`.match(/^(\d+(?:\.\d+)?)s$/);
-
-			return match ? Math.ceil(parseFloat(match[1])*1000) : undefined;
+			}).error?.details ?? [];
 
 		} else {
 
-			return undefined;
+			return [];
 
 		}
 
@@ -422,7 +491,7 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 	 */
 	function throttled<P extends { model: string }, V>(method: (params: P) => Promise<V>): (params: P) => Promise<V> {
 
-		return params => quotas(params.model)(() => method(params), quota);
+		return params => paced(params.model, () => method(params));
 
 	}
 

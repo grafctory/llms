@@ -23,6 +23,38 @@ import { createOpenAI, embedding, json, text } from "./index.js";
 
 
 /**
+ * Records the request limits advertised to the quotas the connector opens, as model and limit pairs.
+ */
+const limits = vi.hoisted(() => vi.fn<(model: string, limit: number) => void>());
+
+vi.mock("@metreeca/llms/quotas", async importOriginal => {
+
+	const actual = await importOriginal<typeof import("@metreeca/llms/quotas")>();
+
+	return {
+
+		...actual,
+
+		createQuota: (model: string) => {
+
+			const quota = actual.createQuota(model);
+
+			return {
+				...quota,
+				limit: (value: number) => {
+					limits(model, value);
+					quota.limit(value);
+				}
+			};
+
+		}
+
+	};
+
+});
+
+
+/**
  * Creates a chat completion carrying a single choice.
  */
 function completion({
@@ -162,6 +194,7 @@ describe("createOpenAI", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs();
+		limits.mockReset();
 	});
 
 
@@ -233,6 +266,36 @@ describe("createOpenAI", () => {
 
 			await expect(client(dispatch).models.list()).rejects.toThrow(RateLimitError);
 			expect(dispatch).toHaveBeenCalledTimes(1);
+
+		});
+
+	});
+
+	describe("request limits", () => {
+
+		const limited = { "x-ratelimit-limit-requests": "500" };
+
+		it("paces a model at the request limit a response advertises", async () => {
+
+			await chat(transport(Response.json(completion(), { headers: limited })));
+
+			expect(limits).toHaveBeenCalledWith("gpt-test", 500);
+
+		});
+
+		it("paces a model at the request limit a rejection advertises", async () => {
+
+			await chat(transport(rejection({ headers: { ...limited, "retry-after-ms": "10" } })));
+
+			expect(limits).toHaveBeenCalledWith("gpt-test", 500);
+
+		});
+
+		it.each(["", "0", "-5", "unlimited"])("ignores an advertised request limit of '%s'", async limit => {
+
+			await chat(transport(Response.json(completion(), { headers: { "x-ratelimit-limit-requests": limit } })));
+
+			expect(limits).not.toHaveBeenCalledWith(expect.anything());
 
 		});
 

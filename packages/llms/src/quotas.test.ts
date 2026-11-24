@@ -16,7 +16,7 @@
 
 import { configureSync, resetSync, type Sink } from "@metreeca/tape";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createQuota } from "./quotas.js";
+import { createQuota, type Quota } from "./quotas.js";
 
 
 describe("createQuota", () => {
@@ -55,7 +55,7 @@ describe("createQuota", () => {
 
 		it("resolves to the value of the request", async () => {
 
-			expect(await createQuota("model")(async () => "value", recover)).toBe("value");
+			expect(await createQuota("model").submit(async () => "value", recover)).toBe("value");
 
 		});
 
@@ -65,7 +65,7 @@ describe("createQuota", () => {
 				.mockRejectedValueOnce(new Retryable())
 				.mockResolvedValueOnce("value");
 
-			expect(await createQuota("model")(request, recover)).toBe("value");
+			expect(await createQuota("model").submit(request, recover)).toBe("value");
 			expect(request).toHaveBeenCalledTimes(2);
 
 		});
@@ -75,16 +75,82 @@ describe("createQuota", () => {
 			const rejection = new Error("fatal");
 			const request = vi.fn<() => Promise<string>>().mockRejectedValue(rejection);
 
-			await expect(createQuota("model")(request, recover)).rejects.toBe(rejection);
+			await expect(createQuota("model").submit(request, recover)).rejects.toBe(rejection);
 			expect(request).toHaveBeenCalledTimes(1);
 
 		});
 
 		it("logs attempts under a category naming the model", async () => {
 
-			await createQuota("model")(async () => "value", recover);
+			await createQuota("model").submit(async () => "value", recover);
 
 			expect(sink).toHaveBeenCalledWith(expect.objectContaining({ category: ["/", "model"] }));
+
+		});
+
+	});
+
+	describe("pacing requests", () => {
+
+		/**
+		 * Submits the given number of requests in sequence through a quota.
+		 *
+		 * @returns The time elapsed in ms from the first submission to the last completion
+		 */
+		async function elapsed(quota: Quota, count: number) {
+
+			const start = Date.now();
+
+			await Array.from({ length: count }).reduce<Promise<unknown>>(
+				previous => previous.then(() => quota.submit(async () => "value", recover)),
+				Promise.resolve()
+			);
+
+			return Date.now()-start;
+
+		}
+
+		it("leaves the pace to the throttle until a limit is advertised", async () => {
+
+			expect(await elapsed(createQuota("model"), 5)).toBeLessThan(250);
+
+		});
+
+		it("caps the pace at the advertised limit", async () => {
+
+			const quota = createQuota("model");
+
+			quota.limit(300); // one request every 200 ms
+
+			expect(await elapsed(quota, 3)).toBeGreaterThanOrEqual(400);
+
+		});
+
+		it("follows a change of the advertised limit", async () => {
+
+			const quota = createQuota("model");
+
+			quota.limit(300);
+			quota.limit(60*1000);
+
+			expect(await elapsed(quota, 5)).toBeLessThan(250);
+
+		});
+
+		it("keeps the pace when no limit is advertised", async () => {
+
+			const quota = createQuota("model");
+
+			quota.limit(300);
+			quota.limit(undefined);
+
+			expect(await elapsed(quota, 3)).toBeGreaterThanOrEqual(400);
+
+		});
+
+		it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("rejects an advertised limit of %s", async limit => {
+
+			expect(() => createQuota("model").limit(limit)).toThrow(TypeError);
 
 		});
 

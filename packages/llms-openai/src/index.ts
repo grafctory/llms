@@ -34,7 +34,7 @@
 import { charge, type Labels } from "@metreeca/llms/usage";
 import { createQuota } from "@metreeca/llms/quotas";
 import type { Vector } from "@metreeca/llms/vectors";
-import { eager, error, isObject, isString, type Lazy, memo, type Value } from "@metreeca/core";
+import { eager, error, isObject, isString, type Lazy, memo, type Optional, type Value } from "@metreeca/core";
 import { TooManyRequests } from "@metreeca/http";
 import { report } from "@metreeca/tape";
 import { type ClientOptions, OpenAI } from "openai";
@@ -113,7 +113,9 @@ class Limited extends Error {
  * a whole execution rather than repeated by each job that draws on the same models.
  *
  * Quota control covers every request naming a model, whichever resource issues it and whatever the SDK version
- * offers. A request rejected over the rate quota is resumed after the `retry-after-ms` or `retry-after` delay the API
+ * offers. Each model is held to the requests per minute the API states for it in the `x-ratelimit-limit-requests`
+ * header of its responses, and runs as fast as the throttle finds feasible until the first response states it. A
+ * request rejected over the rate quota is resumed after the `retry-after-ms` or `retry-after` delay the API
  * advertises, or at the pace the throttle settles on if no delay is advertised. A rejection reporting an exhausted
  * account is returned as it stands, as no delay recovers from it. Requests naming no model, such as listing files or
  * models, and requests whose payload cannot be sent twice, such as streamed uploads, are issued unpaced.
@@ -165,7 +167,9 @@ export function createOpenAI({ labels = {}, ...options }: ClientOptions & {
 
 
 	/**
-	 * Dispatches a request under the throttle of the model it targets.
+	 * Dispatches a request under the quota of the model it targets.
+	 *
+	 * Every response holds the model to the request limit its headers state, if any, from the next request on.
 	 *
 	 * @param input The endpoint the request is addressed to
 	 * @param init The request to dispatch
@@ -186,9 +190,14 @@ export function createOpenAI({ labels = {}, ...options }: ClientOptions & {
 
 			const { tags, request, withhold } = label(input, init);
 
-			return track(model, tags, withhold, await quotas(model)(async () => {
+			const quota = quotas(model);
+
+			return track(model, tags, withhold, await quota.submit(async () => {
 
 				const response = await dispatch(input, request);
+
+				quota.limit(advertised(response.headers));
+
 				const delay = await limited(response);
 
 				return delay === undefined ? response : error(new Limited(delay));
@@ -482,6 +491,23 @@ async function exhausted(response: Response): Promise<boolean> {
 	return isObject(payload)
 		&& isObject(payload["error"])
 		&& payload["error"]["code"] === Exhausted;
+
+}
+
+/**
+ * States the request limit a response advertises for its model.
+ *
+ * @param headers The headers of the response to inspect
+ *
+ * @returns The requests per minute advertised by `headers`, or undefined if they advertise no usable limit
+ *
+ * @see {@link https://platform.openai.com/docs/guides/rate-limits#rate-limits-in-headers Rate limits in headers}
+ */
+function advertised(headers: Headers): Optional<number> {
+
+	const limit = Number(headers.get("x-ratelimit-limit-requests"));
+
+	return Number.isFinite(limit) && limit > 0 ? limit : undefined;
 
 }
 

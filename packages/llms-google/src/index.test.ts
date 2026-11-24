@@ -71,6 +71,38 @@ vi.mock("@google/genai", async importOriginal => {
 
 
 /**
+ * Records the request limits advertised to the quotas the connector opens, as model and limit pairs.
+ */
+const limits = vi.hoisted(() => vi.fn<(model: string, limit: number) => void>());
+
+vi.mock("@metreeca/llms/quotas", async importOriginal => {
+
+	const actual = await importOriginal<typeof import("@metreeca/llms/quotas")>();
+
+	return {
+
+		...actual,
+
+		createQuota: (model: string) => {
+
+			const quota = actual.createQuota(model);
+
+			return {
+				...quota,
+				limit: (value: number) => {
+					limits(model, value);
+					quota.limit(value);
+				}
+			};
+
+		}
+
+	};
+
+});
+
+
+/**
  * Creates a response carrying a single candidate, with model content only if parts are given.
  */
 function generated({ parts, finishReason = FinishReason.STOP, usage }: {
@@ -143,6 +175,7 @@ describe("createGoogleAI", () => {
 		generate.mockReset();
 		stream.mockReset();
 		embed.mockReset();
+		limits.mockReset();
 	});
 
 
@@ -389,13 +422,51 @@ describe("createGoogleAI", () => {
 	describe("quota recovery", () => {
 
 		/**
-		 * Creates a rejection over the rate quota, advertising a retry delay if one is given.
+		 * Creates a rejection over the rate quota, advertising a retry delay if one is given, and listing the violated
+		 * quotas as `QuotaFailure` violations, each naming the id and the limit of its quota.
 		 */
-		function exhausted(retryDelay?: string) {
+		function exhausted(retryDelay?: string, violations: readonly {
+			readonly quotaId: string
+			readonly quotaValue: string
+		}[] = []) {
 			return Object.assign(new ApiError({ message: "quota exhausted", status: 429 }), {
-				error: { details: retryDelay ? [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay }] : [] }
+				error: {
+					details: [
+						...(violations.length ? [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations }] : []),
+						...(retryDelay ? [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay }] : [])
+					]
+				}
 			});
 		}
+
+		it("paces a model at the request limit a rate rejection advertises", async () => {
+
+			stub({
+				turns: [exhausted("0s", [{
+					quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+					quotaValue: "15"
+				}])]
+			});
+
+			await submit({ model: "gemini-3-flash", contents: "query" });
+
+			expect(limits).toHaveBeenCalledWith("gemini-3-flash", 15);
+
+		});
+
+		it.each([
+			{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20" },
+			{ quotaId: "GenerateContentInputTokensPerModelPerMinute-FreeTier", quotaValue: "250000" },
+			{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", quotaValue: "unlimited" }
+		])("ignores the limit of a $quotaId violation of $quotaValue", async violation => {
+
+			stub({ turns: [exhausted("0s", [violation])] });
+
+			await submit({ model: "gemini-3-flash", contents: "query" });
+
+			expect(limits).not.toHaveBeenCalledWith(expect.anything());
+
+		});
 
 		it.each(["0s", "0.01s"])("resumes a request rejected over the quota after an advertised delay of %s", async delay => {
 

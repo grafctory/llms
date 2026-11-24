@@ -18,7 +18,8 @@
  * Model usage tracing.
  *
  * Attributes model calls to the source of their cost, such as the job or team issuing them, and logs the tokens each
- * call consumes with its labels, so that spend can be traced to its source from the log and in provider billing reports.
+ * call consumes with its labels, so that spend can be traced to its source from the log and in provider billing
+ * reports.
  *
  * @module
  */
