@@ -48,10 +48,10 @@
   },
   "dependencies": {
     "@google/genai": "~2.30.0",
-    "@metreeca/core": "^0.14.0",
-    "@metreeca/http": "^0.6.0",
+    "@metreeca/core": "^0.14.2",
+    "@metreeca/http": "^0.6.1",
     "@metreeca/llms": "^0.5.0",
-    "@metreeca/tape": "^0.13.0"
+    "@metreeca/tape": "^0.13.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

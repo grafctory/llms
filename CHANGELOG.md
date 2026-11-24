@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0](https://github.com/metreeca/llms/compare/v0.4.0...HEAD)
+## [Unreleased](https://github.com/metreeca/llms/compare/v0.5.0...HEAD)
+
+## [0.5.0](https://github.com/metreeca/llms/compare/v0.4.0...v0.5.0) - 2026-11-24
 
 ### Added
 
@@ -21,27 +23,31 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ([#8](https://github.com/metreeca/llms/issues/8)), so concurrent jobs drawing on the same model are paced together
   and every request logs its token usage under the labels of the source it is charged to
 
-- `createGoogleAI` and `createOpenAI` pace each model at the request limit the provider advertises for it
-  ([#9](https://github.com/metreeca/llms/issues/9)), rather than probing the limit through rejections, so a run
-  reaches the full rate its quota allows without being held back by a fixed floor or slowed by repeated rejections
-
 ### Changed
 
-- **Breaking**: `@metreeca/llms` — the root entry point is replaced by the `vectors`, `quotas` and `usage` entry points,
-  and the embedding vector primitives are imported from `@metreeca/llms/vectors` rather than from `@metreeca/llms`
-
-- `@metreeca/llms-google` requires `@google/genai` `~2.30.0` and `@metreeca/llms-openai` requires `openai` `~7.25.0`,
-  pinning each connector to the SDK release its workarounds are tested against, rather than any later minor release
+- **Breaking**: `@metreeca/llms` — the root entry point is replaced by the `vectors`, `quotas` and `usage` entry
+  points; migrate `import { cosine } from "@metreeca/llms"` to `import { cosine } from "@metreeca/llms/vectors"`,
+  and likewise for `synopsis`, `compress`, `decompress` and the `Vector` and `Distance` types they operate on
 
 - **Breaking**: `@metreeca/llms-google` — a requested response schema is submitted with every request carrying tools,
   and a model rejecting it fails with the API error rather than replying through a hidden `gemini-2.5-flash-lite`
-  conversion ([#6](https://github.com/metreeca/llms/issues/6)), so generations reach only the model the caller named
+  conversion ([#6](https://github.com/metreeca/llms/issues/6)), so generations reach only the model the caller named;
+  migrate requests combining a response schema with `tools` on a model before Gemini 3 to a Gemini 3 or later model,
+  or drop the schema from those requests and parse the prose reply the model returns into the shape required
+
+- **Breaking**: `@metreeca/llms-google` requires `@google/genai` `~2.30.0` and `@metreeca/llms-openai` requires
+  `openai` `~7.25.0`, pinning each connector to the SDK release its workarounds are tested against; migrate direct
+  imports of `@google/genai` or `openai` to the connector re-exports and drop those SDKs from your own dependencies
+
+- `createGoogleAI` and `createOpenAI` pace each model at the request limit the provider advertises for it
+  ([#9](https://github.com/metreeca/llms/issues/9)), so a run reaches the full rate its quota allows instead of
+  being held back by a fixed pacing floor or slowed down by the repeated rate rejections a probing throttle meets
 
 ### Fixed
 
 - `@metreeca/llms-google` — the `usageMetadata` of a generation resolving function calls accounts for every turn
   ([#5](https://github.com/metreeca/llms/issues/5)), so token budgets and accounting no longer undercount tool-using
-  runs, which used to see only the last turn of each generation and missed the tokens spent on the earlier ones
+  runs by missing the tokens spent on every turn of a generation but the last one it issued
 
 ## [0.4.0](https://github.com/metreeca/llms/compare/v0.3.1...v0.4.0) - 2026-11-17
 
