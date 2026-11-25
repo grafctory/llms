@@ -2,10 +2,11 @@
 
 Ready-made tasks and shared services for AI jobs.
 
-**@grafctory/llms** provides ready-made [@grafctory/flow](https://github.com/grafctory/flow) tasks for putting language
-models to work in a pipeline: prompting a model, extracting structured records from free text, and embedding content for
-semantic retrieval. The tasks run under the [@grafctory/gear](https://github.com/grafctory/gear) job executor, which
-supplies the shared services they draw on, including the clients of the model providers they reach.
+**@grafctory/llms** is the AI task module of the [Grafctory][grafctory] model-driven knowledge graph framework. It
+provides ready-made [@grafctory/flow] tasks for putting language models to work in a pipeline: prompting a model,
+extracting structured records from free text, and embedding content for semantic retrieval. The tasks run under the
+[@grafctory/gear] job executor, which supplies the shared services they draw on, including the clients of the model
+providers they reach.
 
 - **Ready-Made Tasks**: prompting, extraction and embedding, chaining alongside any other task
 - **Shared Services**: model clients, credentials and response caches, built on demand and released after the run
@@ -16,6 +17,10 @@ supplies the shared services they draw on, including the clients of the model pr
 >
 > Pipelines are server-side workloads targeting [Node.js](https://nodejs.org/) 22 or later, relying on facilities such
 > as the filesystem, the process environment and `fetch`. The packages are not intended for the browser.
+
+[@grafctory/flow]: https://github.com/grafctory/flow
+[@grafctory/gear]: https://github.com/grafctory/gear
+[grafctory]: https://github.com/grafctory
 
 # Installation
 
@@ -32,7 +37,7 @@ npm install @grafctory/llms-<provider>  # model connectors, one package per prov
 
 Install the core package, then add a connector package for each model provider the pipeline reaches. Each connector
 package pulls in only the SDK its own provider needs and re-exports it in full, so pipelines import SDK values and
-types from the connector and never install the SDK themselves. The [@grafctory/gear](https://github.com/grafctory/gear)
+types from the connector and never install the SDK themselves. The [@grafctory/gear]
 job executor ships separately: install it directly to set up and run the jobs putting tasks and connectors to work.
 
 | Package                 | Description                  |
@@ -63,3 +68,5 @@ job executor ships separately: install it directly to set up and run the jobs pu
 
 This project is licensed under the Apache 2.0 License –
 see [LICENSE](https://github.com/grafctory/llms?tab=Apache-2.0-1-ov-file) file for details.
+
+<sub>Grafctory™ is a trademark of Metreeca srl.</sub>

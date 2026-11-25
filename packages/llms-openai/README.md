@@ -1,12 +1,19 @@
 # @grafctory/llms-openai
 
-[![npm](https://img.shields.io/npm/v/@grafctory/llms-openai)](https://www.npmjs.com/package/@grafctory/llms-openai)
+[![npm][npm-badge]][npm] [![Grafctory][grafctory-badge]][grafctory]
 
-OpenAI model connectors for [@grafctory/llms](https://github.com/grafctory/llms).
+[npm-badge]: https://img.shields.io/npm/v/@grafctory/llms-openai
+[npm]: https://www.npmjs.com/package/@grafctory/llms-openai
+[grafctory-badge]: https://img.shields.io/badge/part%20of-Grafctory-blue
+[grafctory]: https://github.com/grafctory
+
+OpenAI model connectors for [@grafctory/llms].
 
 Connects AI jobs to OpenAI models, ready to work alongside any other task in a pipeline. Long runs proceed reliably to
 completion, and every result a job receives from a model can be trusted as complete. The cost of each request is logged
 under the labels of the job issuing it, so any spike can be traced back to its source.
+
+[@grafctory/llms]: https://github.com/grafctory/llms
 
 # Installation
 
@@ -44,3 +51,5 @@ See the [API reference](https://grafctory.github.io/llms/modules/_grafctory_llms
 
 This project is licensed under the Apache 2.0 License –
 see [LICENSE](https://github.com/grafctory/llms?tab=Apache-2.0-1-ov-file) file for details.
+
+<sub>Grafctory™ is a trademark of Metreeca srl.</sub>
