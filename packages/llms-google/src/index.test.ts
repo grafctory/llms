@@ -355,7 +355,11 @@ describe("createGoogleAI", () => {
 	describe("structured output with tools", () => {
 
 		const tools = [{ functionDeclarations: [] }];
-		const responseJsonSchema = { type: "object", properties: { label: { type: "string" } } };
+		const responseJsonSchema = {
+			type: "object",
+			properties: { label: { type: "string" } },
+			propertyOrdering: ["label"]
+		};
 
 		const config = { tools, responseMimeType: "application/json", responseJsonSchema };
 
@@ -414,6 +418,122 @@ describe("createGoogleAI", () => {
 				expect.objectContaining({ responseJsonSchema }),
 				expect.objectContaining({ responseJsonSchema })
 			]);
+
+		});
+
+	});
+
+	describe("property order", () => {
+
+		const config = { responseMimeType: "application/json" };
+
+		const unordered = { type: "object", properties: { name: { type: "string" }, credential: { type: "string" } } };
+		const ordered = { ...unordered, propertyOrdering: ["name", "credential"] };
+
+		/**
+		 * Submits a request carrying a response schema, listing the schemas submitted with each request.
+		 */
+		async function order(responseJsonSchema: unknown, tools: { readonly tools?: CallableTool[] } = {}) {
+
+			const requests = stub({ turns: tools.tools ? [{ parts: [call] }] : [] });
+
+			await submit({ model: "gemini-3-flash", contents: "query", config: { ...config, ...tools, responseJsonSchema } });
+
+			return requests().map(({ config }) => config?.responseJsonSchema);
+
+		}
+
+		it("states the declared order of the properties of an object", async () => {
+
+			expect(await order({ ...unordered, required: ["credential"] }))
+				.toEqual([{ ...ordered, required: ["credential"] }]);
+
+		});
+
+		it.each<{ readonly label: string, readonly wrap: (schema: unknown) => unknown }>([
+			{
+				label: "a property",
+				wrap: schema => ({ type: "object", properties: { item: schema }, propertyOrdering: ["item"] })
+			},
+			{ label: "array items", wrap: schema => ({ type: "array", items: schema }) },
+			{ label: "a tuple item", wrap: schema => ({ type: "array", prefixItems: [schema] }) },
+			{ label: "an anyOf option", wrap: schema => ({ anyOf: [schema, { type: "null" }] }) },
+			{ label: "a oneOf option", wrap: schema => ({ oneOf: [schema] }) },
+			{ label: "a definition", wrap: schema => ({ $defs: { item: schema }, $ref: "#/$defs/item" }) },
+			{ label: "additional properties", wrap: schema => ({ type: "object", additionalProperties: schema }) }
+		])("states the declared order of an object nested as $label", async ({ wrap }) => {
+
+			expect(await order(wrap(unordered))).toEqual([wrap(ordered)]);
+
+		});
+
+		it("keeps the order an object states, ordering the objects nested in it", async () => {
+
+			const schema = (nested: unknown) => ({
+				type: "object",
+				properties: { nested, label: { type: "string" } },
+				propertyOrdering: ["label", "nested"]
+			});
+
+			expect(await order(schema(unordered))).toEqual([schema(ordered)]);
+
+		});
+
+		it("tells properties named after schema keywords from the keywords themselves", async () => {
+
+			const properties = { properties: { type: "string" }, items: { type: "string" }, anyOf: { type: "string" } };
+
+			expect(await order({ type: "object", properties })).toEqual([{
+				type: "object",
+				properties,
+				propertyOrdering: ["properties", "items", "anyOf"]
+			}]);
+
+		});
+
+		it.each([
+			{ label: "a scalar", schema: { type: "string" } },
+			{ label: "an object without properties", schema: { type: "object" } },
+			{ label: "an object with no properties", schema: { type: "object", properties: {} } },
+			{ label: "a boolean schema", schema: true }
+		])("leaves $label as it stands", async ({ schema }) => {
+
+			expect(await order(schema)).toEqual([schema]);
+
+		});
+
+		it("leaves the schema of the caller unchanged", async () => {
+
+			const schema = structuredClone(unordered);
+
+			const [submitted] = await order(schema);
+
+			expect(schema).toEqual(unordered);
+			expect(submitted).not.toBe(schema);
+
+		});
+
+		it("states the declared order on every function calling turn", async () => {
+
+			expect(await order(unordered, { tools: [tool] })).toEqual([ordered, ordered]);
+
+		});
+
+		it("states the declared order on streamed requests", async () => {
+
+			stream.mockImplementation(async () => (async function* () {
+				yield generated({ parts: [prose] });
+			})());
+
+			await createGoogleAI({ apiKey: "test" }).models.generateContentStream({
+				model: "gemini-3-flash",
+				contents: "query",
+				config: { ...config, responseJsonSchema: unordered }
+			});
+
+			expect(stream).toHaveBeenCalledWith(expect.objectContaining({
+				config: expect.objectContaining({ responseJsonSchema: ordered })
+			}));
 
 		});
 

@@ -10,6 +10,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.6.0](https://github.com/grafctory/llms/compare/v0.5.0...HEAD)
 
+### Added
+
+- `createGoogleAI` clients keep the property order a `responseJsonSchema` declares, nested objects included
+  ([#10](https://github.com/grafctory/llms/issues/10)), so structured answers follow the order prompts reason in
+  rather than alphabetical order, which can drop or misfile values
+
 ## [0.5.0](https://github.com/grafctory/llms/compare/v0.4.0...v0.5.0) - 2026-11-24
 
 ### Added

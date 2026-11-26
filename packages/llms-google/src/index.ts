@@ -81,7 +81,7 @@ export * from "@google/genai";
  * A client is meant to be configured once by the consumer binding it, so that credentials and endpoint are settled for
  * a whole execution rather than repeated by each job that draws on the same models.
  *
- * The client takes over two concerns the API and the SDK leave to the caller:
+ * The client takes over three concerns the API and the SDK leave to the caller:
  *
  * - **Quota control**: every request is paced against a per-model adaptive throttle. A request rejected over the rate
  *   quota is resumed after the `RetryInfo` delay the API advertises, so a long run keeps within the quota instead of
@@ -96,6 +96,12 @@ export * from "@google/genai";
  *   its function calls are returned to the caller. The request fails with an {@link !Error Error} if a response
  *   carries no model content, if the model calls a function while no callable tool is declared, or if the turn limit
  *   runs out before a final response; in every case the error carries no partial conversation.
+ *
+ * - **Property order**: a JSON response requested with a `responseJsonSchema` lists the properties of each object in
+ *   the order the schema declares them, nested objects included, rather than alphabetically with required ones first.
+ *   An object stating its own `propertyOrdering` keeps it, and the caller's schema is never modified. The order is a
+ *   strong hint the model may not strictly follow, so properties whose values are needed must still be required.
+ *   Property names made of digits alone always come first, as JavaScript lists them ahead of any other key.
  *
  * > [!WARNING]
  * >
@@ -121,6 +127,7 @@ export * from "@google/genai";
  *
  * @see {@link https://ai.google.dev/gemini-api/docs/function-calling Function calling}
  * @see {@link https://ai.google.dev/gemini-api/docs/structured-output Structured output}
+ * @see {@link https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/control-generated-output Vertex AI structured output}
  * @see {@link https://ai.google.dev/gemini-api/docs/rate-limits Rate limits}
  * @see {@link https://github.com/googleapis/js-genai/issues/727 js-genai#727}
  */
@@ -165,11 +172,14 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 			generateContent: (generateContent =>
 
-					async (...[{ config, ...params }, ...rest]: Parameters<typeof generateContent>) => {
+					async (...[request, ...rest]: Parameters<typeof generateContent>) => {
+
+						const $request = ordered(request);
+						const { config, ...params } = $request;
 
 						return config?.tools
 							? await execute()
-							: await generate({ ...params, config });
+							: await generate($request);
 
 
 						/**
@@ -358,7 +368,7 @@ export function createGoogleAI({ labels = {}, ...options }: GoogleGenAIOptions &
 
 					async (params: GenerateContentParameters) => {
 
-						const [tags, $params] = labelled(params);
+						const [tags, $params] = labelled(ordered(params));
 
 						const chunks = await paced(params.model, () => generateContentStream($params));
 
@@ -718,6 +728,76 @@ function combine(
 					.filter(count => count.modality === modality)
 					.reduce((total, { tokenCount }) => total+(tokenCount ?? 0), 0)
 			}));
+
+	}
+
+}
+
+/**
+ * States the declared property order of the response schema of a content generation request.
+ *
+ * Gemini generates the properties of a structured answer alphabetically, required ones first, unless the schema
+ * states a `propertyOrdering`, which the SDK never derives from a `responseJsonSchema`.
+ *
+ * @param params The request to prepare
+ *
+ * @returns A copy of `params` whose `responseJsonSchema` states the declared property order of every object schema
+ *          lacking one, or `params` itself, unchanged, if it requests no JSON schema for the response
+ *
+ * @see {@link https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/control-generated-output Vertex AI structured output}
+ */
+function ordered(params: GenerateContentParameters): GenerateContentParameters {
+
+	const schema = params.config?.responseJsonSchema;
+
+	return schema === undefined ? params : {
+		...params,
+		config: { ...params.config, responseJsonSchema: order(schema) }
+	};
+
+
+	function order(schema: unknown): unknown {
+
+		if ( isObject(schema) ) {
+
+			const { properties } = schema;
+
+			const keys = isObject(properties) ? Object.keys(properties) : [];
+
+			return {
+				...Object.fromEntries(Object.entries(schema).map(([keyword, value]) => [keyword, nested(keyword, value)])),
+				...(keys.length > 0 && !("propertyOrdering" in schema) ? { propertyOrdering: keys } : {})
+			};
+
+		} else {
+
+			return schema;
+
+		}
+
+	}
+
+	function nested(keyword: string, value: unknown): unknown {
+
+		if ( keyword === "properties" || keyword === "$defs" ) {
+
+			return isObject(value)
+				? Object.fromEntries(Object.entries(value).map(([name, schema]) => [name, order(schema)]))
+				: value;
+
+		} else if ( keyword === "items" || keyword === "additionalProperties" ) {
+
+			return order(value);
+
+		} else if ( keyword === "prefixItems" || keyword === "anyOf" || keyword === "oneOf" ) {
+
+			return isArray(value) ? value.map(order) : value;
+
+		} else {
+
+			return value;
+
+		}
 
 	}
 
